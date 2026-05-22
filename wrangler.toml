@@ -1,6 +1,6 @@
 ﻿name = "img2-studio"
 main = "cloudflare/worker.mjs"
-compatibility_date = "2026-05-23"
+compatibility_date = "2026-05-22"
 
 [assets]
 directory = "web/dist"

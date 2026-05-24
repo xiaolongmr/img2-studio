@@ -2,6 +2,7 @@ import { httpRequest } from "@/lib/request";
 import webConfig from "@/constants/common-env";
 import { getStoredAuthKey } from "@/store/auth";
 import { getStoredApiBaseUrl } from "@/store/api-base-url";
+import { getImageAsyncRelayForceEnabled } from "@/store/image-async-relay";
 import {
   normalizeImageAccountPolicy,
   type StoredImageAccountPolicy,
@@ -489,6 +490,97 @@ let cachedConfig: ConfigPayload | null = null;
 const IMAGE_ASYNC_HEADERS = { "X-Rivermoon-Async": "1" };
 const FOUR_K_PIXEL_THRESHOLD = 3840 * 2160;
 
+function isImageStreamModeEnabled() {
+  return getImageAsyncRelayForceEnabled();
+}
+
+function shouldAttachImageAsyncHeader() {
+  // Streaming mode relies on `stream=true`; avoid custom headers that may trigger CORS preflight failures.
+  if (isImageStreamModeEnabled()) {
+    return false;
+  }
+  const baseUrl = String(getStoredApiBaseUrl() || "").trim();
+  if (!baseUrl || typeof window === "undefined") {
+    return true;
+  }
+  try {
+    const targetOrigin = new URL(baseUrl, window.location.origin).origin;
+    return targetOrigin === window.location.origin;
+  } catch {
+    return true;
+  }
+}
+
+function getImageRequestHeaders() {
+  return shouldAttachImageAsyncHeader() ? IMAGE_ASYNC_HEADERS : {};
+}
+
+function isImageResponsePayload(payload: unknown): payload is ImageResponse {
+  return (
+    Boolean(payload) &&
+    typeof payload === "object" &&
+    Array.isArray((payload as ImageResponse).data)
+  );
+}
+
+function parseImageStreamResponse(raw: string): ImageResponse | null {
+  const text = String(raw || "");
+  if (!text) {
+    return null;
+  }
+
+  // Some gateways may still return plain JSON even when `stream=true`.
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (isImageResponsePayload(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // ignore and continue SSE parsing
+  }
+
+  let completedB64 = "";
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) {
+      continue;
+    }
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(payload) as unknown;
+      if (isImageResponsePayload(parsed)) {
+        return parsed;
+      }
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        typeof (parsed as { b64_json?: unknown }).b64_json === "string"
+      ) {
+        const typed = parsed as { type?: string; b64_json?: string };
+        if (
+          typed.type === "image_generation.completed" ||
+          typed.type === "image_edit.completed"
+        ) {
+          completedB64 = typed.b64_json || "";
+        }
+      }
+    } catch {
+      // ignore malformed chunks
+    }
+  }
+
+  if (!completedB64) {
+    return null;
+  }
+  return {
+    created: Math.floor(Date.now() / 1000),
+    data: [{ b64_json: completedB64 }],
+  };
+}
+
 export function setCachedImageAccountPolicy(
   policy: StoredImageAccountPolicy | null,
 ) {
@@ -575,8 +667,16 @@ function extractImageJobError(payload: unknown) {
 
 async function resolveImageResponse(
   path: "/v1/images/generations" | "/v1/images/edits",
-  response: ImageResponse | ImageJobResponse,
+  response: ImageResponse | ImageJobResponse | string,
 ) {
+  if (typeof response === "string") {
+    const parsed = parseImageStreamResponse(response);
+    if (parsed) {
+      return parsed;
+    }
+    throw new Error("流式返回解析失败，请关闭流式后重试");
+  }
+
   if (!isImageJobResponse(response)) {
     return response as ImageResponse;
   }
@@ -613,7 +713,10 @@ async function requestImageResponse(
     body: Record<string, unknown> | FormData;
   },
 ) {
-  const response = await httpRequest<ImageResponse | ImageJobResponse>(path, options);
+  const response = await httpRequest<ImageResponse | ImageJobResponse | string>(
+    path,
+    options,
+  );
   return resolveImageResponse(path, response);
 }
 
@@ -981,9 +1084,12 @@ export async function generateImageWithOptions(
   if (outputFormat === "jpeg" || outputFormat === "webp") {
     body.output_compression = outputCompression;
   }
+  if (isImageStreamModeEnabled()) {
+    body.stream = true;
+  }
   return requestImageResponse("/v1/images/generations", {
     method: "POST",
-    headers: IMAGE_ASYNC_HEADERS,
+    headers: getImageRequestHeaders(),
     body,
   });
 }
@@ -1028,9 +1134,12 @@ export async function editImage({
   if (mask) {
     formData.append("mask", mask);
   }
+  if (isImageStreamModeEnabled()) {
+    formData.append("stream", "true");
+  }
   return requestImageResponse("/v1/images/edits", {
     method: "POST",
-    headers: IMAGE_ASYNC_HEADERS,
+    headers: getImageRequestHeaders(),
     body: formData,
   });
 }

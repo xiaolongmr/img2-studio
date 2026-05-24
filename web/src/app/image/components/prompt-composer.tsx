@@ -132,11 +132,20 @@ export function PromptComposer({
     if (hasComposerContent && !previousHasComposerContentRef.current) {
       setIsMobileComposerExpanded(true);
     } else if (!hasComposerContent && previousHasComposerContentRef.current) {
-      setIsMobileComposerExpanded(false);
+      const isSmallScreen =
+        typeof window !== "undefined" &&
+        window.matchMedia("(max-width: 639px)").matches;
+      const keepFocusOnTextarea =
+        typeof document !== "undefined" &&
+        Boolean(textareaRef.current) &&
+        document.activeElement === textareaRef.current;
+      if (isSmallScreen && !keepFocusOnTextarea) {
+        setIsMobileComposerExpanded(false);
+      }
     }
 
     previousHasComposerContentRef.current = hasComposerContent;
-  }, [hasComposerContent]);
+  }, [hasComposerContent, textareaRef]);
 
   useEffect(() => {
     onMobileCollapsedChange?.(isMobileComposerCollapsed);

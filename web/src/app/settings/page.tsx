@@ -1,18 +1,30 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { CheckCircle2, KeyRound, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { login } from "@/lib/api";
-import { getDefaultApiBaseUrl, getStoredApiBaseUrl, setStoredApiBaseUrl } from "@/store/api-base-url";
+import {
+  getDefaultApiBaseUrl,
+  getStoredApiBaseUrl,
+  setStoredApiBaseUrl,
+} from "@/store/api-base-url";
+import {
+  getImageAsyncRelayForceEnabled,
+  setImageAsyncRelayForceEnabled,
+} from "@/store/image-async-relay";
 import { getStoredAuthKey, setStoredAuthKey } from "@/store/auth";
 
 export default function SettingsPage() {
   const [apiBaseUrl, setApiBaseUrl] = useState(getStoredApiBaseUrl());
   const [apiKey, setApiKey] = useState("");
+  const [forceAsyncRelay, setForceAsyncRelay] = useState(
+    getImageAsyncRelayForceEnabled(),
+  );
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -37,6 +49,7 @@ export default function SettingsPage() {
     setIsSaving(true);
     try {
       setStoredApiBaseUrl(apiBaseUrl);
+      setImageAsyncRelayForceEnabled(forceAsyncRelay);
       await login(normalized);
       await setStoredAuthKey(normalized);
       toast.success("已验证 gpt-image-2，并保存到本机浏览器");
@@ -59,13 +72,16 @@ export default function SettingsPage() {
               本地设置
             </h1>
             <p className="mt-2 text-sm leading-7 text-stone-500 dark:text-[var(--studio-text-muted)]">
-              这里保存你的 API URL 和 NewAPI key 到当前浏览器本地，用于调用 gpt-image-2。不会写入服务器。
+              这里保存你的 API URL 和 NewAPI key 到当前浏览器本地，用于调用 gpt-image-2，不会写入服务端。
             </p>
           </div>
         </div>
 
         <div className="mt-8 space-y-3">
-          <label htmlFor="api-base-url" className="block text-sm font-medium text-stone-700 dark:text-[var(--studio-text)]">
+          <label
+            htmlFor="api-base-url"
+            className="block text-sm font-medium text-stone-700 dark:text-[var(--studio-text)]"
+          >
             API URL
           </label>
           <Input
@@ -78,7 +94,10 @@ export default function SettingsPage() {
         </div>
 
         <div className="mt-8 space-y-3">
-          <label htmlFor="newapi-key" className="block text-sm font-medium text-stone-700 dark:text-[var(--studio-text)]">
+          <label
+            htmlFor="newapi-key"
+            className="block text-sm font-medium text-stone-700 dark:text-[var(--studio-text)]"
+          >
             NewAPI key
           </label>
           <Input
@@ -89,6 +108,28 @@ export default function SettingsPage() {
             placeholder="sk-..."
             className="h-12 rounded-2xl border-stone-200 bg-stone-50 px-4 shadow-none focus-visible:ring-1 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]"
           />
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-stone-200 bg-stone-50/70 p-4 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]">
+          <label
+            htmlFor="force-async-relay"
+            className="flex cursor-pointer items-start gap-3"
+          >
+            <Checkbox
+              id="force-async-relay"
+              checked={forceAsyncRelay}
+              onCheckedChange={(checked) => setForceAsyncRelay(Boolean(checked))}
+              className="mt-0.5"
+            />
+            <span className="space-y-1">
+              <span className="block text-sm font-medium text-stone-800 dark:text-[var(--studio-text-strong)]">
+                强制启用流式/异步中转
+              </span>
+              <span className="block text-xs leading-6 text-stone-500 dark:text-[var(--studio-text-muted)]">
+                开启后会在图片请求中发送 stream=true（不再附带 X-Rivermoon-Async 头），适合支持流式图片返回的中转站，避免长任务被 2 分钟超时截断。
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3">

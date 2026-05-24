@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const httpRequestMock = vi.hoisted(() => vi.fn());
+const getStoredApiBaseUrlMock = vi.hoisted(() => vi.fn(() => ""));
+const getImageAsyncRelayForceEnabledMock = vi.hoisted(() => vi.fn(() => false));
+const originalWindow = globalThis.window;
 
 vi.mock("@/lib/request", () => ({
   httpRequest: httpRequestMock,
@@ -10,6 +13,14 @@ vi.mock("@/constants/common-env", () => ({
   default: {
     apiUrl: "",
   },
+}));
+
+vi.mock("@/store/api-base-url", () => ({
+  getStoredApiBaseUrl: getStoredApiBaseUrlMock,
+}));
+
+vi.mock("@/store/image-async-relay", () => ({
+  getImageAsyncRelayForceEnabled: getImageAsyncRelayForceEnabledMock,
 }));
 
 import {
@@ -25,6 +36,17 @@ describe("image API requests", () => {
   beforeEach(() => {
     httpRequestMock.mockReset();
     httpRequestMock.mockResolvedValue({ created: 0, data: [] });
+    getStoredApiBaseUrlMock.mockReset();
+    getStoredApiBaseUrlMock.mockReturnValue("");
+    getImageAsyncRelayForceEnabledMock.mockReset();
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(false);
+    if (typeof originalWindow === "undefined") {
+      // @ts-expect-error test-only override
+      delete globalThis.window;
+    } else {
+      // @ts-expect-error test-only override
+      globalThis.window = originalWindow;
+    }
   });
 
   it("marks image generation requests as async relay jobs", async () => {
@@ -41,6 +63,73 @@ describe("image API requests", () => {
         }),
       }),
     );
+  });
+
+  it("does not attach async relay header for cross-origin API base URLs", async () => {
+    // @ts-expect-error test-only window shim
+    globalThis.window = { location: { origin: "http://localhost:5176" } };
+    getStoredApiBaseUrlMock.mockReturnValue("https://api.denxio.top");
+
+    await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(httpRequestMock).toHaveBeenCalledWith(
+      "/v1/images/generations",
+      expect.objectContaining({
+        method: "POST",
+        headers: {},
+      }),
+    );
+  });
+
+  it("keeps async relay header for same-origin API base URLs", async () => {
+    // @ts-expect-error test-only window shim
+    globalThis.window = { location: { origin: "http://localhost:5176" } };
+    getStoredApiBaseUrlMock.mockReturnValue("http://localhost:5176");
+
+    await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(httpRequestMock).toHaveBeenCalledWith(
+      "/v1/images/generations",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "X-Rivermoon-Async": "1" },
+      }),
+    );
+  });
+
+  it("attaches async relay header when force-enabled on cross-origin API base URLs", async () => {
+    // @ts-expect-error test-only window shim
+    globalThis.window = { location: { origin: "http://localhost:5176" } };
+    getStoredApiBaseUrlMock.mockReturnValue("https://api.denxio.top");
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+
+    await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(httpRequestMock).toHaveBeenCalledWith(
+      "/v1/images/generations",
+      expect.objectContaining({
+        method: "POST",
+        headers: {},
+        body: expect.objectContaining({
+          stream: true,
+        }),
+      }),
+    );
+  });
+
+  it("parses SSE stream chunks into an image response", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    httpRequestMock.mockResolvedValueOnce(
+      [
+        'data: {"type":"image_generation.started"}',
+        'data: {"type":"image_generation.completed","b64_json":"abc123"}',
+        "data: [DONE]",
+      ].join("\n"),
+    );
+
+    const result = await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(result.data).toEqual([{ b64_json: "abc123" }]);
   });
 
   it("sends PNG image generation requests without compression", async () => {

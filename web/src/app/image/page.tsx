@@ -34,6 +34,7 @@ import {
   type ImageMode,
   type StoredImage,
 } from "@/store/image-conversations";
+import { consumePendingPromptForWorkspace } from "@/store/prompt-library";
 import { ConversationTurns } from "./components/conversation-turns";
 import { EmptyState } from "./components/empty-state";
 import { HistorySidebar } from "./components/history-sidebar";
@@ -1585,6 +1586,21 @@ export default function ImagePage() {
     );
     textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
   }, [imagePrompt, mode]);
+
+  useEffect(() => {
+    const pendingPrompt = consumePendingPromptForWorkspace();
+    if (!pendingPrompt) {
+      return;
+    }
+    setMode(pendingPrompt.mode === "edit" ? "edit" : "generate");
+    setImagePrompt(pendingPrompt.prompt);
+    openDraftConversation();
+    setSourceImages([]);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+    toast.success(`已载入提示词：${pendingPrompt.title || "未命名提示词"}`);
+  }, [openDraftConversation, setSourceImages]);
 
   useEffect(() => {
     window.dispatchEvent(

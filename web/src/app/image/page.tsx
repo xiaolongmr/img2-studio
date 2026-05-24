@@ -57,8 +57,9 @@ type ImageAspectRatio =
   | "16:9"
   | "21:9"
   | "2:3"
-  | "9:16";
-type ImageResolutionTier = "auto" | "standard" | "two-k" | "four-k";
+  | "9:16"
+  | "custom";
+type ImageResolutionTier = string;
 type ImageResolutionAccess = "free" | "paid";
 type ImageResolutionPreset = {
   tier: ImageResolutionTier;
@@ -70,16 +71,19 @@ type RunningActiveRequestState = ActiveRequestState & {
   startedAt: number;
 };
 
-const imageAspectRatioOptions: Array<{
+const imageAspectRatioOptionsBase: Array<{
   label: string;
   value: ImageAspectRatio;
 }> = [
   { label: "Auto", value: "auto" },
   { label: "1:1", value: "1:1" },
+  { label: "4:3", value: "4:3" },
   { label: "3:2", value: "3:2" },
   { label: "16:9", value: "16:9" },
+  { label: "21:9", value: "21:9" },
   { label: "2:3", value: "2:3" },
   { label: "9:16", value: "9:16" },
+  { label: "自定义", value: "custom" },
 ];
 
 const imageAutoResolutionPresets: ImageResolutionPreset[] = [
@@ -94,7 +98,7 @@ const DESKTOP_PROMPT_MIN_HEIGHT = 70;
 const DESKTOP_PROMPT_MAX_HEIGHT = 420;
 
 const imageResolutionPresets: Record<
-  Exclude<ImageAspectRatio, "auto">,
+  Exclude<ImageAspectRatio, "auto" | "custom">,
   ImageResolutionPreset[]
 > = {
   "1:1": [
@@ -121,6 +125,82 @@ const imageResolutionPresets: Record<
     { tier: "four-k", label: "2160 x 3840 · 4K", value: "2160x3840", access: "free" },
   ],
 };
+
+function parseAspectRatioPair(value: string): [number, number] | null {
+  const match = String(value || "")
+    .trim()
+    .match(/^(\d+)\s*[:/xX]\s*(\d+)$/);
+  if (!match) {
+    return null;
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+  return [width, height];
+}
+
+function normalizeCustomAspectRatioInput(value: string) {
+  return String(value || "")
+    .replace(/[：]/g, ":")
+    .replace(/[／]/g, "/")
+    .replace(/[×✕]/g, "x")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function roundToMultipleOf16(value: number) {
+  return Math.max(16, Math.round(value / 16) * 16);
+}
+
+function fitRatioToLongEdge(
+  ratioWidth: number,
+  ratioHeight: number,
+  longEdge: number,
+) {
+  if (ratioWidth >= ratioHeight) {
+    const width = roundToMultipleOf16(longEdge);
+    const height = roundToMultipleOf16((width * ratioHeight) / ratioWidth);
+    return { width, height };
+  }
+  const height = roundToMultipleOf16(longEdge);
+  const width = roundToMultipleOf16((height * ratioWidth) / ratioHeight);
+  return { width, height };
+}
+
+function buildCustomResolutionPresets(aspectRatioLabel: string): ImageResolutionPreset[] {
+  const ratio = parseAspectRatioPair(
+    normalizeCustomAspectRatioInput(aspectRatioLabel),
+  );
+  if (!ratio) {
+    return imageResolutionPresets["1:1"];
+  }
+  const [ratioWidth, ratioHeight] = ratio;
+  const longEdges: Array<{ tier: ImageResolutionTier; longEdge: number }> = [
+    { tier: "custom-1k", longEdge: 1024 },
+    { tier: "custom-2k", longEdge: 2048 },
+    { tier: "custom-4k", longEdge: 3840 },
+  ];
+  const presets = longEdges.map(({ tier, longEdge }) => {
+    const { width, height } = fitRatioToLongEdge(ratioWidth, ratioHeight, longEdge);
+    return {
+      tier,
+      label: `${width} x ${height}`,
+      value: `${width}x${height}`,
+      access: "free" as const,
+    };
+  });
+  return presets.filter(
+    (preset, index, list) =>
+      list.findIndex((candidate) => candidate.value === preset.value) === index,
+  );
+}
 
 const modeOptions: Array<{
   label: string;
@@ -477,6 +557,25 @@ function deriveTurnStatusFromImages(
   return mapTaskStatusToTurnStatus(taskStatus);
 }
 
+function isTurnActivelyProcessing(turn: ImageConversationTurn) {
+  if (
+    turn.status === "queued" ||
+    turn.status === "running" ||
+    turn.status === "generating"
+  ) {
+    return true;
+  }
+  return turn.images.some((image) => image.status === "loading");
+}
+
+function parseIsoTimeToMs(value: string | undefined) {
+  if (!value) {
+    return NaN;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
 function applyTaskViewToConversation(
   conversation: ImageConversation,
   tasksByTurnKey: Map<string, ImageTaskView[]>,
@@ -609,6 +708,7 @@ export default function ImagePage() {
   const [imageCount, setImageCount] = useState("1");
   const [imageAspectRatio, setImageAspectRatio] =
     useState<ImageAspectRatio>("1:1");
+  const [customAspectRatioLabel, setCustomAspectRatioLabel] = useState("5:4");
   const [imageResolutionTier, setImageResolutionTier] =
     useState<ImageResolutionTier>("standard");
   const [imageQuality, setImageQuality] = useState<ImageQuality>("low");
@@ -704,7 +804,6 @@ export default function ImagePage() {
     directActiveRequests[directActiveRequests.length - 1]?.conversationId ??
     null;
   const hasActiveTasks = directActiveRequests.length > 0;
-
   const {
     conversations,
     selectedConversationId,
@@ -772,6 +871,60 @@ export default function ImagePage() {
       applyTaskViewToConversation(conversation, tasksByTurnKey),
     );
   }, [conversations, taskItems]);
+  const restoredActiveRequests = useMemo<RunningActiveRequestState[]>(() => {
+    const restored: RunningActiveRequestState[] = [];
+    for (const conversation of displayedConversations) {
+      for (const turn of conversation.turns ?? []) {
+        if (!isTurnActivelyProcessing(turn)) {
+          continue;
+        }
+        const startedAt =
+          parseIsoTimeToMs(turn.startedAt) ||
+          parseIsoTimeToMs(turn.createdAt) ||
+          Date.now();
+        restored.push({
+          conversationId: conversation.id,
+          turnId: turn.id,
+          mode: turn.mode,
+          count: Math.max(1, turn.count || 1),
+          variant: "standard",
+          startedAt,
+        });
+      }
+    }
+    return restored.sort((left, right) => left.startedAt - right.startedAt);
+  }, [displayedConversations]);
+  const effectiveActiveRequests = useMemo(
+    () =>
+      directActiveRequests.length > 0
+        ? directActiveRequests
+        : restoredActiveRequests,
+    [directActiveRequests, restoredActiveRequests],
+  );
+  const effectiveHasActiveTasks = effectiveActiveRequests.length > 0;
+  const activeRequestElapsedSecondsByTurnId = useMemo(() => {
+    const now = Date.now();
+    const next: Record<string, number> = {};
+    for (const request of effectiveActiveRequests) {
+      next[request.turnId] = Math.max(
+        0,
+        Math.floor((now - request.startedAt) / 1000),
+      );
+    }
+    return next;
+  }, [effectiveActiveRequests, submitElapsedSeconds]);
+  const activeConversationElapsedSecondsById = useMemo(() => {
+    const next: Record<string, number> = {};
+    for (const request of effectiveActiveRequests) {
+      const elapsed =
+        activeRequestElapsedSecondsByTurnId[request.turnId] ?? 0;
+      const current = next[request.conversationId] ?? 0;
+      if (elapsed > current) {
+        next[request.conversationId] = elapsed;
+      }
+    }
+    return next;
+  }, [activeRequestElapsedSecondsByTurnId, effectiveActiveRequests]);
   const selectedConversation = useMemo(
     () =>
       displayedConversations.find((item) => item.id === selectedConversationId) ??
@@ -825,7 +978,8 @@ export default function ImagePage() {
       .join("|");
     return `${selectedConversationLastTurn.id}:${selectedConversationLastTurn.status}:${imageKey}`;
   }, [selectedConversationLastTurn]);
-  const activeRequest = directActiveRequests[directActiveRequests.length - 1] ?? null;
+  const activeRequest =
+    effectiveActiveRequests[effectiveActiveRequests.length - 1] ?? null;
   const parsedCount = useMemo(
     () => Math.max(1, Math.min(8, Number(imageCount) || 1)),
     [imageCount],
@@ -853,12 +1007,21 @@ export default function ImagePage() {
       configuredImageMode,
     ],
   );
+  const imageAspectRatioOptions = useMemo(
+    () => imageAspectRatioOptionsBase,
+    [],
+  );
   const currentResolutionPresets = useMemo(
-    () =>
-      imageAspectRatio === "auto"
-        ? imageAutoResolutionPresets
-        : imageResolutionPresets[imageAspectRatio],
-    [imageAspectRatio],
+    () => {
+      if (imageAspectRatio === "auto") {
+        return imageAutoResolutionPresets;
+      }
+      if (imageAspectRatio === "custom") {
+        return buildCustomResolutionPresets(customAspectRatioLabel);
+      }
+      return imageResolutionPresets[imageAspectRatio];
+    },
+    [customAspectRatioLabel, imageAspectRatio],
   );
   const selectedResolutionPreset = useMemo(
     () =>
@@ -925,6 +1088,21 @@ export default function ImagePage() {
       imageResolutionTier,
     ],
   );
+  const handleImageAspectRatioChange = useCallback(
+    (value: string) => {
+      setImageAspectRatio(value as ImageAspectRatio);
+      if (value === "custom" && !customAspectRatioLabel.trim()) {
+        setCustomAspectRatioLabel("5:4");
+      }
+    },
+    [customAspectRatioLabel],
+  );
+  const handleCustomAspectRatioLabelChange = useCallback((value: string) => {
+    setCustomAspectRatioLabel(normalizeCustomAspectRatioInput(value));
+  }, []);
+  const handleImageResolutionTierChange = useCallback((value: string) => {
+    setImageResolutionTier(value);
+  }, []);
   const imageResolutionAccess = useMemo<ImageResolutionAccess>(
     () => selectedResolutionPreset?.access ?? "free",
     [selectedResolutionPreset],
@@ -1295,7 +1473,7 @@ export default function ImagePage() {
     previousTurnCountRef.current = selectedConversationTurns.length;
     previousLastTurnKeyRef.current = selectedConversationLastTurnKey;
 
-    if (!selectedConversation && !hasActiveTasks) {
+    if (!selectedConversation && !effectiveHasActiveTasks) {
       return;
     }
 
@@ -1315,7 +1493,7 @@ export default function ImagePage() {
       window.cancelAnimationFrame(frame);
     };
   }, [
-    hasActiveTasks,
+    effectiveHasActiveTasks,
     scrollToBottom,
     selectedConversation,
     selectedConversationId,
@@ -1341,7 +1519,7 @@ export default function ImagePage() {
   }, [isStandaloneWorkspace, scrollToBottom, selectedConversationId]);
 
   useEffect(() => {
-    if (requestTimer.status !== "running" || directActiveRequests.length === 0) {
+    if (requestTimer.status !== "running" || effectiveActiveRequests.length === 0) {
       return;
     }
 
@@ -1351,7 +1529,7 @@ export default function ImagePage() {
         0,
         Math.floor(
           Math.max(
-            ...directActiveRequests.map((request) => now - request.startedAt),
+            ...effectiveActiveRequests.map((request) => now - request.startedAt),
           ) / 1000,
         ),
       );
@@ -1368,7 +1546,31 @@ export default function ImagePage() {
     return () => {
       window.clearInterval(timer);
     };
-  }, [directActiveRequests, requestTimer.status]);
+  }, [effectiveActiveRequests, requestTimer.status]);
+
+  useEffect(() => {
+    if (effectiveActiveRequests.length === 0) {
+      return;
+    }
+    setRequestTimer((current) =>
+      current.status === "running"
+        ? current
+        : { status: "running", elapsedSeconds: current.elapsedSeconds },
+    );
+  }, [effectiveActiveRequests.length]);
+
+  useEffect(() => {
+    if (effectiveActiveRequests.length === 0) {
+      return;
+    }
+    void refreshHistory({ silent: true });
+    const timer = window.setInterval(() => {
+      void refreshHistory({ silent: true });
+    }, 1200);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [effectiveActiveRequests.length, refreshHistory]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -1598,7 +1800,7 @@ export default function ImagePage() {
         ? submitElapsedSeconds
         : requestTimer.elapsedSeconds;
     if (requestTimer.status === "running") {
-      const activeCount = directActiveRequests.length;
+      const activeCount = effectiveActiveRequests.length;
       return activeCount > 1
         ? `生成中 ${activeCount} 个 · ${formatTimerClock(elapsedSeconds)}`
         : `生成中 ${formatTimerClock(elapsedSeconds)}`;
@@ -1611,7 +1813,7 @@ export default function ImagePage() {
     }
     return "就绪";
   }, [
-    directActiveRequests.length,
+    effectiveActiveRequests.length,
     requestTimer.elapsedSeconds,
     requestTimer.status,
     submitElapsedSeconds,
@@ -1660,11 +1862,13 @@ export default function ImagePage() {
         conversations={displayedConversations}
         selectedConversationId={selectedConversationId}
         isLoadingHistory={isLoadingHistory}
-        hasActiveTasks={hasActiveTasks}
+        hasActiveTasks={effectiveHasActiveTasks}
         activeConversationIds={activeConversationIds}
+        activeConversationElapsedSecondsById={activeConversationElapsedSecondsById}
         modeLabelMap={modeLabelMap}
         buildConversationPreviewSource={buildConversationPreviewSource}
         formatConversationTime={formatConversationTime}
+        formatTimerClock={formatTimerClock}
         onCreateDraft={handleCreateDraftAndOpenWorkspace}
         onClearHistory={handleClearHistory}
         onFocusConversation={handleFocusConversationAndOpenWorkspace}
@@ -1736,12 +1940,12 @@ export default function ImagePage() {
               conversationId={selectedConversation.id}
               turns={selectedConversationTurns}
               modeLabelMap={modeLabelMap}
-              activeRequests={directActiveRequests}
+              activeRequests={effectiveActiveRequests}
+              activeRequestElapsedSecondsByTurnId={activeRequestElapsedSecondsByTurnId}
               activeTaskByTurnId={selectedConversationActiveTaskByTurnId}
               cancellingTaskIds={cancellingTaskIds}
               processingStatus={processingStatus}
               waitingDots={waitingDots}
-              submitElapsedSeconds={submitElapsedSeconds}
               formatConversationTime={formatConversationTime}
               formatProcessingDuration={formatProcessingDuration}
               onOpenSelectionEditor={openSelectionEditor}
@@ -1786,6 +1990,7 @@ export default function ImagePage() {
         imageCount={imageCount}
         imageAspectRatio={imageAspectRatio}
         imageAspectRatioOptions={imageAspectRatioOptions}
+        customAspectRatioValue={customAspectRatioLabel}
         imageResolutionTier={imageResolutionTier}
         imageResolutionTierLabel={imageResolutionTierLabel}
         imageResolutionTierOptions={imageResolutionTierOptions}
@@ -1804,12 +2009,9 @@ export default function ImagePage() {
         maskInputRef={maskInputRef}
         onModeChange={setMode}
         onImageCountChange={setImageCount}
-        onImageAspectRatioChange={(value) =>
-          setImageAspectRatio(value as ImageAspectRatio)
-        }
-        onImageResolutionTierChange={(value) =>
-          setImageResolutionTier(value as ImageResolutionTier)
-        }
+        onImageAspectRatioChange={handleImageAspectRatioChange}
+        onCustomAspectRatioValueChange={handleCustomAspectRatioLabelChange}
+        onImageResolutionTierChange={handleImageResolutionTierChange}
         onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
         onImageOutputFormatChange={(value) =>
           setImageOutputFormat(value as ImageOutputFormat)
@@ -1857,18 +2059,16 @@ export default function ImagePage() {
         allowOutputOptions={Boolean(editorTarget)}
         imageAspectRatio={imageAspectRatio}
         imageAspectRatioOptions={imageAspectRatioOptions}
+        customAspectRatioValue={customAspectRatioLabel}
         imageResolutionTier={imageResolutionTier}
         imageResolutionTierOptions={imageResolutionTierOptions}
         imageQuality={imageQuality}
         imageQualityOptions={imageQualityOptions}
         imageQualityDisabled={!isImageQualityEnabled}
         imageQualityDisabledReason={imageQualityDisabledReason}
-        onImageAspectRatioChange={(value) =>
-          setImageAspectRatio(value as ImageAspectRatio)
-        }
-        onImageResolutionTierChange={(value) =>
-          setImageResolutionTier(value as ImageResolutionTier)
-        }
+        onImageAspectRatioChange={handleImageAspectRatioChange}
+        onCustomAspectRatioValueChange={handleCustomAspectRatioLabelChange}
+        onImageResolutionTierChange={handleImageResolutionTierChange}
         onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
         onClose={closeSelectionEditor}
         onSubmit={async (payload) => {

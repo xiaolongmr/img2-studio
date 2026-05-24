@@ -3,6 +3,7 @@ import webConfig from "@/constants/common-env";
 import { getStoredAuthKey } from "@/store/auth";
 import { getStoredApiBaseUrl } from "@/store/api-base-url";
 import { getImageAsyncRelayForceEnabled } from "@/store/image-async-relay";
+import { getImageStreamPartialImages } from "@/store/image-stream-preview";
 import {
   normalizeImageAccountPolicy,
   type StoredImageAccountPolicy,
@@ -33,6 +34,14 @@ export type ImageResponseItem = {
   parent_message_id?: string;
   source_account_id?: string;
   error?: string;
+};
+
+export type ImageStreamPreviewEvent = {
+  b64_json: string;
+  partial_image_index?: number;
+  output_format?: string;
+  created_at?: number;
+  type?: string;
 };
 
 export type ImageTaskStatus =
@@ -494,6 +503,10 @@ function isImageStreamModeEnabled() {
   return getImageAsyncRelayForceEnabled();
 }
 
+function getImageStreamPartialImagesCount() {
+  return Math.min(3, Math.max(0, Math.floor(getImageStreamPartialImages())));
+}
+
 function shouldAttachImageAsyncHeader() {
   // Streaming mode relies on `stream=true`; avoid custom headers that may trigger CORS preflight failures.
   if (isImageStreamModeEnabled()) {
@@ -524,61 +537,388 @@ function isImageResponsePayload(payload: unknown): payload is ImageResponse {
 }
 
 function parseImageStreamResponse(raw: string): ImageResponse | null {
-  const text = String(raw || "");
+  const text = String(raw || "").replace(/^\uFEFF/, "");
   if (!text) {
     return null;
   }
 
+  const normalizeToImageResponse = (payload: unknown): ImageResponse | null => {
+    if (isImageResponsePayload(payload)) {
+      return payload;
+    }
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    const record = payload as {
+      b64_json?: unknown;
+      url?: unknown;
+      created_at?: unknown;
+      created?: unknown;
+      result?: unknown;
+      data?: unknown;
+    };
+    if (
+      typeof record.b64_json === "string" ||
+      typeof record.url === "string"
+    ) {
+      return {
+        created:
+          typeof record.created === "number"
+            ? record.created
+            : typeof record.created_at === "number"
+              ? record.created_at
+              : Math.floor(Date.now() / 1000),
+        data: [
+          {
+            b64_json:
+              typeof record.b64_json === "string" ? record.b64_json : undefined,
+            url: typeof record.url === "string" ? record.url : undefined,
+          },
+        ],
+      };
+    }
+    if (record.result && typeof record.result === "object") {
+      const nested = record.result as { b64_json?: unknown; url?: unknown };
+      if (
+        typeof nested.b64_json === "string" ||
+        typeof nested.url === "string"
+      ) {
+        return {
+          created: Math.floor(Date.now() / 1000),
+          data: [
+            {
+              b64_json:
+                typeof nested.b64_json === "string"
+                  ? nested.b64_json
+                  : undefined,
+              url: typeof nested.url === "string" ? nested.url : undefined,
+            },
+          ],
+        };
+      }
+    }
+    if (record.data && typeof record.data === "object" && !Array.isArray(record.data)) {
+      const nested = record.data as { b64_json?: unknown; url?: unknown };
+      if (
+        typeof nested.b64_json === "string" ||
+        typeof nested.url === "string"
+      ) {
+        return {
+          created: Math.floor(Date.now() / 1000),
+          data: [
+            {
+              b64_json:
+                typeof nested.b64_json === "string"
+                  ? nested.b64_json
+                  : undefined,
+              url: typeof nested.url === "string" ? nested.url : undefined,
+            },
+          ],
+        };
+      }
+    }
+    return null;
+  };
+
   // Some gateways may still return plain JSON even when `stream=true`.
   try {
     const parsed = JSON.parse(text) as unknown;
-    if (isImageResponsePayload(parsed)) {
-      return parsed;
+    const normalized = normalizeToImageResponse(parsed);
+    if (normalized) {
+      return normalized;
     }
   } catch {
     // ignore and continue SSE parsing
   }
 
   let completedB64 = "";
+  let previewB64 = "";
+  const toImageResponse = (b64: string) => ({
+    created: Math.floor(Date.now() / 1000),
+    data: [{ b64_json: b64 }],
+  });
+
+  const consumePayload = (parsed: unknown) => {
+    if (!parsed || typeof parsed !== "object") {
+      return null as ImageResponse | null;
+    }
+    const event = parsed as {
+      type?: unknown;
+      b64_json?: unknown;
+      partial_image_b64?: unknown;
+      partial_image_base64?: unknown;
+    };
+    const type =
+      typeof event.type === "string" ? event.type.toLowerCase() : "";
+    const b64 =
+      typeof event.b64_json === "string"
+        ? event.b64_json
+        : typeof event.partial_image_b64 === "string"
+          ? event.partial_image_b64
+          : typeof event.partial_image_base64 === "string"
+            ? event.partial_image_base64
+            : "";
+    if (!b64) {
+      const normalized = normalizeToImageResponse(parsed);
+      return normalized;
+    }
+    if (type.includes("completed")) {
+      completedB64 = b64;
+      return toImageResponse(b64);
+    }
+    if (type.includes("partial")) {
+      previewB64 = b64;
+      return null;
+    }
+    const normalized = normalizeToImageResponse(parsed);
+    if (normalized) {
+      return normalized;
+    }
+    previewB64 = b64;
+    return null;
+  };
+
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) {
       continue;
     }
-    const payload = trimmed.slice(5).trim();
-    if (!payload || payload === "[DONE]") {
-      continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") {
+        continue;
     }
     try {
       const parsed = JSON.parse(payload) as unknown;
-      if (isImageResponsePayload(parsed)) {
-        return parsed;
-      }
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        typeof (parsed as { b64_json?: unknown }).b64_json === "string"
-      ) {
-        const typed = parsed as { type?: string; b64_json?: string };
-        if (
-          typed.type === "image_generation.completed" ||
-          typed.type === "image_edit.completed"
-        ) {
-          completedB64 = typed.b64_json || "";
-        }
+      const resolved = consumePayload(parsed);
+      if (resolved) {
+        return resolved;
       }
     } catch {
       // ignore malformed chunks
     }
   }
 
-  if (!completedB64) {
-    return null;
+  if (completedB64) {
+    return toImageResponse(completedB64);
   }
-  return {
-    created: Math.floor(Date.now() / 1000),
-    data: [{ b64_json: completedB64 }],
+  if (previewB64) {
+    return toImageResponse(previewB64);
+  }
+  return null;
+}
+
+function parseErrorMessageFromPayload(payload: unknown, fallback: string) {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+  const record = payload as {
+    detail?: { message?: string; error?: string };
+    error?: string | { message?: string };
+    message?: string;
   };
+  if (record.detail?.message || record.detail?.error) {
+    return record.detail.message || record.detail.error || fallback;
+  }
+  if (record.error && typeof record.error === "object") {
+    return record.error.message || fallback;
+  }
+  if (typeof record.error === "string") {
+    return record.error || fallback;
+  }
+  return record.message || fallback;
+}
+
+function parseSseDataChunks(chunk: string) {
+  const events = chunk
+    .split(/\r?\n\r?\n+/)
+    .map((eventBlock) => {
+      const dataLines = eventBlock
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim());
+      return dataLines.join("\n").trim();
+    })
+    .filter(Boolean);
+  return events;
+}
+
+async function requestImageResponseViaStream(
+  path: "/v1/images/generations" | "/v1/images/edits",
+  options: {
+    method: "POST";
+    headers: Record<string, string>;
+    body: Record<string, unknown> | FormData;
+    onPartialImage?: (event: ImageStreamPreviewEvent) => void;
+  },
+): Promise<ImageResponse | ImageJobResponse | string> {
+  const baseUrl = getStoredApiBaseUrl().replace(/\/$/, "");
+  const authKey = await getStoredAuthKey();
+  const headers = new Headers(options.headers);
+  if (authKey && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${authKey}`);
+  }
+  if (!(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: options.method,
+    headers,
+    body:
+      options.body instanceof FormData
+        ? options.body
+        : JSON.stringify(options.body),
+  });
+
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (!response.ok) {
+    const text = await response.text();
+    let payload: unknown = null;
+    try {
+      payload = text ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      payload = null;
+    }
+    throw new Error(
+      parseErrorMessageFromPayload(
+        payload,
+        text || `图片请求失败 (${response.status})`,
+      ),
+    );
+  }
+
+  if (!contentType.includes("text/event-stream")) {
+    const text = await response.text();
+    return text;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return response.text();
+  }
+
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let finalResponse: ImageResponse | null = null;
+  let fallbackPreviewB64 = "";
+  const processPayload = (payload: string) => {
+    if (!payload || payload === "[DONE]") {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(payload) as unknown;
+      if (isImageResponsePayload(parsed)) {
+        finalResponse = parsed;
+        return;
+      }
+      if (parsed && typeof parsed === "object") {
+        const previewRecord = parsed as {
+          b64_json?: unknown;
+          partial_image_b64?: unknown;
+          partial_image_base64?: unknown;
+          partial_image_index?: unknown;
+          output_format?: unknown;
+          created_at?: unknown;
+          type?: unknown;
+        };
+        const b64 =
+          typeof previewRecord.b64_json === "string"
+            ? previewRecord.b64_json
+            : typeof previewRecord.partial_image_b64 === "string"
+              ? previewRecord.partial_image_b64
+              : typeof previewRecord.partial_image_base64 === "string"
+                ? previewRecord.partial_image_base64
+                : "";
+        if (b64) {
+          fallbackPreviewB64 = b64;
+          // Completed event can be treated as final response even if server doesn't send [DONE].
+          const eventType =
+            typeof previewRecord.type === "string"
+              ? previewRecord.type.toLowerCase()
+              : "";
+          if (eventType.includes("partial")) {
+            options.onPartialImage?.({
+              b64_json: b64,
+              partial_image_index:
+                typeof previewRecord.partial_image_index === "number"
+                  ? previewRecord.partial_image_index
+                  : 0,
+              output_format:
+                typeof previewRecord.output_format === "string"
+                  ? previewRecord.output_format
+                  : undefined,
+              created_at:
+                typeof previewRecord.created_at === "number"
+                  ? previewRecord.created_at
+                  : undefined,
+              type:
+                typeof previewRecord.type === "string"
+                  ? previewRecord.type
+                  : undefined,
+            });
+          }
+          if (eventType.includes("completed")) {
+            finalResponse = {
+              created:
+                typeof previewRecord.created_at === "number"
+                  ? previewRecord.created_at
+                  : Math.floor(Date.now() / 1000),
+              data: [{ b64_json: b64 }],
+            };
+          }
+        }
+      }
+    } catch {
+      // ignore malformed stream chunks
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    const lfBoundary = buffer.lastIndexOf("\n\n");
+    const crlfBoundary = buffer.lastIndexOf("\r\n\r\n");
+    const boundary = Math.max(lfBoundary, crlfBoundary);
+    if (boundary < 0) {
+      continue;
+    }
+    const chunk = buffer.slice(0, boundary);
+    buffer = buffer.slice(boundary + (boundary === crlfBoundary ? 4 : 2));
+    const payloads = parseSseDataChunks(chunk);
+    for (const payload of payloads) {
+      processPayload(payload);
+    }
+  }
+
+  // Some providers close the stream without "\n\n" tail separators and without [DONE].
+  const tailPayloads = parseSseDataChunks(buffer);
+  for (const payload of tailPayloads) {
+    processPayload(payload);
+  }
+  if (tailPayloads.length === 0 && buffer.trim().startsWith("data:")) {
+    const tailDataLines = buffer
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .filter(Boolean);
+    for (const payload of tailDataLines) {
+      processPayload(payload);
+    }
+  }
+
+  if (finalResponse) {
+    return finalResponse;
+  }
+  if (fallbackPreviewB64) {
+    return {
+      created: Math.floor(Date.now() / 1000),
+      data: [{ b64_json: fallbackPreviewB64 }],
+    };
+  }
+  return "";
 }
 
 export function setCachedImageAccountPolicy(
@@ -711,8 +1051,13 @@ async function requestImageResponse(
     method: "POST";
     headers: Record<string, string>;
     body: Record<string, unknown> | FormData;
+    onPartialImage?: (event: ImageStreamPreviewEvent) => void;
   },
 ) {
+  if (isImageStreamModeEnabled()) {
+    const streamed = await requestImageResponseViaStream(path, options);
+    return resolveImageResponse(path, streamed);
+  }
   const response = await httpRequest<ImageResponse | ImageJobResponse | string>(
     path,
     options,
@@ -1061,6 +1406,7 @@ export async function generateImageWithOptions(
     quality?: ImageQuality;
     outputFormat?: ImageOutputFormat;
     outputCompression?: number;
+    onPartialImage?: (event: ImageStreamPreviewEvent) => void;
   } = {},
 ) {
   const {
@@ -1070,6 +1416,7 @@ export async function generateImageWithOptions(
     quality = "low",
     outputFormat = "jpeg",
     outputCompression = 85,
+    onPartialImage,
   } = options;
   const normalizedCount = Math.max(1, count);
   const requestSize = size?.trim() || "1024x1024";
@@ -1086,11 +1433,13 @@ export async function generateImageWithOptions(
   }
   if (isImageStreamModeEnabled()) {
     body.stream = true;
+    body.partial_images = getImageStreamPartialImagesCount();
   }
   return requestImageResponse("/v1/images/generations", {
     method: "POST",
     headers: getImageRequestHeaders(),
     body,
+    onPartialImage,
   });
 }
 
@@ -1104,6 +1453,7 @@ export async function editImage({
   count = 1,
   outputFormat = "jpeg",
   outputCompression = 85,
+  onPartialImage,
 }: {
   prompt: string;
   images: File[];
@@ -1115,6 +1465,7 @@ export async function editImage({
   count?: number;
   outputFormat?: ImageOutputFormat;
   outputCompression?: number;
+  onPartialImage?: (event: ImageStreamPreviewEvent) => void;
 }) {
   const formData = new FormData();
   formData.append("prompt", prompt);
@@ -1136,10 +1487,15 @@ export async function editImage({
   }
   if (isImageStreamModeEnabled()) {
     formData.append("stream", "true");
+    formData.append(
+      "partial_images",
+      String(getImageStreamPartialImagesCount()),
+    );
   }
   return requestImageResponse("/v1/images/edits", {
     method: "POST",
     headers: getImageRequestHeaders(),
     body: formData,
+    onPartialImage,
   });
 }

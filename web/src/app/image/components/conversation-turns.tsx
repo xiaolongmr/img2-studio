@@ -7,6 +7,7 @@ import {
   Clock3,
   Copy,
   Download,
+  Link2,
   LoaderCircle,
   RotateCcw,
   Sparkles,
@@ -64,6 +65,33 @@ function formatTurnSizeLabel(size?: string) {
   return String(size || "")
     .trim()
     .replace("x", "X");
+}
+
+function formatTurnDuration(
+  startedAt: string | undefined,
+  finishedAt: string | undefined,
+) {
+  if (!startedAt || !finishedAt) {
+    return "";
+  }
+  const start = new Date(startedAt).getTime();
+  const end = new Date(finishedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return "";
+  }
+  const totalSeconds = Math.max(0, Math.floor((end - start) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function formatLiveDurationFromSeconds(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return minutes > 0
+    ? `${minutes}m ${String(seconds).padStart(2, "0")}s`
+    : `${seconds}s`;
 }
 
 function mimeTypeToExtension(mimeType: string | undefined) {
@@ -166,11 +194,11 @@ type ConversationTurnsProps = {
   turns: ImageConversationTurn[];
   modeLabelMap: Record<ImageMode, string>;
   activeRequests: ActiveRequestState[];
+  activeRequestElapsedSecondsByTurnId: Record<string, number>;
   activeTaskByTurnId: Map<string, ImageTaskView>;
   cancellingTaskIds: string[];
   processingStatus: ProcessingStatus | null;
   waitingDots: string;
-  submitElapsedSeconds: number;
   formatConversationTime: (value: string) => string;
   formatProcessingDuration: (seconds: number) => string;
   onOpenSelectionEditor: (
@@ -200,11 +228,11 @@ export const ConversationTurns = memo(function ConversationTurns({
   turns,
   modeLabelMap,
   activeRequests,
+  activeRequestElapsedSecondsByTurnId,
   activeTaskByTurnId,
   cancellingTaskIds,
   processingStatus,
   waitingDots,
-  submitElapsedSeconds,
   formatConversationTime,
   formatProcessingDuration,
   onOpenSelectionEditor,
@@ -215,6 +243,8 @@ export const ConversationTurns = memo(function ConversationTurns({
   return (
     <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-0 pb-8 sm:px-6 sm:py-8">
       {turns.map((turn) => {
+        const liveElapsedSeconds =
+          activeRequestElapsedSecondsByTurnId[turn.id] ?? 0;
         const turnProcessing = activeRequests.some(
           (activeRequest) =>
             activeRequest.conversationId === conversationId &&
@@ -323,6 +353,54 @@ export const ConversationTurns = memo(function ConversationTurns({
               </div>
 
               <div className="flex flex-wrap items-center gap-2 px-1 text-xs text-stone-500">
+                {(() => {
+                  const turnDuration = turnProcessing
+                    ? formatLiveDurationFromSeconds(liveElapsedSeconds)
+                    : formatTurnDuration(turn.startedAt, turn.finishedAt);
+                  const previewProgress = Array.isArray(turn.streamPreviewProgress)
+                    ? [...turn.streamPreviewProgress].sort((a, b) => a - b)
+                    : [];
+                  const previewFrames = Math.max(
+                    0,
+                    previewProgress.length || (turn.streamPreviewFrames ?? 0),
+                  );
+                  const previewTarget = Math.max(0, turn.streamPartialImages ?? 0);
+                  const rawCurrentPreviewStep =
+                    previewProgress.length > 0
+                      ? previewProgress[previewProgress.length - 1]
+                      : previewTarget > 0
+                        ? Math.min(previewFrames, previewTarget)
+                        : previewFrames;
+                  const currentPreviewStep =
+                    previewTarget > 0
+                      ? Math.min(previewTarget, Math.max(0, rawCurrentPreviewStep))
+                      : Math.max(0, rawCurrentPreviewStep);
+                  const isFinished =
+                    turn.status === "success" ||
+                    turn.status === "error" ||
+                    turn.status === "cancelled";
+                  const stepProgressLabel =
+                    previewTarget > 0
+                      ? `步骤图 ${currentPreviewStep} · ${currentPreviewStep}/${previewTarget}`
+                      : `步骤图 ${currentPreviewStep}`;
+                  return (
+                    <>
+                      {turnDuration ? (
+                        <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                          用时 {turnDuration}
+                        </span>
+                      ) : null}
+                      <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                        {turn.streamEnabled ? "流式" : "非流式"}
+                      </span>
+                      <span className="rounded-full bg-stone-100 px-3 py-1.5">
+                        {isFinished && previewTarget > 0
+                          ? `已完成 · ${stepProgressLabel}`
+                          : stepProgressLabel}
+                      </span>
+                    </>
+                  );
+                })()}
                 <span className="rounded-full bg-stone-100 px-3 py-1.5">
                   {modeLabelMap[turn.mode]}
                 </span>
@@ -409,16 +487,28 @@ export const ConversationTurns = memo(function ConversationTurns({
                       >
                         {image.status === "success" && imageDataUrl ? (
                           <div>
-                            <Zoom>
-                              <Image
-                                src={imageDataUrl}
-                                alt={`Generated result ${index + 1}`}
-                                width={1024}
-                                height={1024}
-                                unoptimized
-                                className="block h-auto max-h-[270px] w-auto max-w-full cursor-zoom-in"
-                              />
-                            </Zoom>
+                            <div className="relative">
+                              <Zoom>
+                                <Image
+                                  src={imageDataUrl}
+                                  alt={`Generated result ${index + 1}`}
+                                  width={1024}
+                                  height={1024}
+                                  unoptimized
+                                  className="block h-auto max-h-[270px] w-auto max-w-full cursor-zoom-in"
+                                />
+                              </Zoom>
+                              <span
+                                className={cn(
+                                  "pointer-events-none absolute top-3 right-3 inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium shadow-sm",
+                                  image.streamPreview
+                                    ? "bg-amber-50/95 text-amber-700 ring-1 ring-amber-200"
+                                    : "bg-emerald-50/95 text-emerald-700 ring-1 ring-emerald-200",
+                                )}
+                              >
+                                {image.streamPreview ? "预览中" : "最终图"}
+                              </span>
+                            </div>
                             <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 px-4 py-3">
                               <button
                                 type="button"
@@ -449,7 +539,7 @@ export const ConversationTurns = memo(function ConversationTurns({
                                 title="引用"
                                 aria-label="引用"
                               >
-                                <Copy className="size-4" />
+                                <Link2 className="size-4" />
                               </button>
                               <a
                                 href={imageDataUrl}
@@ -504,7 +594,7 @@ export const ConversationTurns = memo(function ConversationTurns({
                                 : showQueuedState
                                 ? `${turn.waitingDetail || formatWaitingReason(turn.waitingReason)}${(turn.queuePosition ?? 0) > 1 ? ` · 前面还有 ${turn.queuePosition! - 1} 个` : ""}`
                                 : turnProcessing && processingStatus
-                                ? `${processingStatus.detail} · 已等待 ${formatProcessingDuration(submitElapsedSeconds)}`
+                                ? `${processingStatus.detail} · 已等待 ${formatProcessingDuration(liveElapsedSeconds)}`
                                 : "图片处理通常需要几分钟，请稍候"}
                             </p>
                           </div>

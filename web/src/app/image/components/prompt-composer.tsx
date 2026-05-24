@@ -36,6 +36,7 @@ type PromptComposerProps = {
   imageCount: string;
   imageAspectRatio: string;
   imageAspectRatioOptions: Array<{ label: string; value: string }>;
+  customAspectRatioValue?: string;
   imageResolutionTier: string;
   imageResolutionTierLabel: string;
   imageResolutionTierOptions: Array<{ label: string; value: string; disabled?: boolean }>;
@@ -55,6 +56,7 @@ type PromptComposerProps = {
   onModeChange: (mode: ImageMode) => void;
   onImageCountChange: (value: string) => void;
   onImageAspectRatioChange: (value: string) => void;
+  onCustomAspectRatioValueChange?: (value: string) => void;
   onImageResolutionTierChange: (value: string) => void;
   onImageQualityChange: (value: string) => void;
   onImageOutputFormatChange: (value: string) => void;
@@ -75,6 +77,7 @@ export function PromptComposer({
   imageCount,
   imageAspectRatio,
   imageAspectRatioOptions,
+  customAspectRatioValue = "",
   imageResolutionTier,
   imageResolutionTierLabel,
   imageResolutionTierOptions,
@@ -94,6 +97,7 @@ export function PromptComposer({
   onModeChange,
   onImageCountChange,
   onImageAspectRatioChange,
+  onCustomAspectRatioValueChange,
   onImageResolutionTierChange,
   onImageQualityChange,
   onImageOutputFormatChange,
@@ -348,6 +352,17 @@ export function PromptComposer({
                   ))}
                 </SelectContent>
               </Select>
+            ) : null}
+            {showImageOutputControls && imageAspectRatio === "custom" ? (
+              <Input
+                value={customAspectRatioValue}
+                onChange={(event) =>
+                  onCustomAspectRatioValueChange?.(event.target.value)
+                }
+                placeholder="如 5:4"
+                className="h-9 w-[96px] shrink-0 rounded-full border-stone-200 bg-white text-[13px] font-medium text-stone-700 shadow-none focus-visible:ring-0 sm:h-10 sm:w-[124px] sm:text-sm"
+                title="自定义比例，支持 5:4 / 7:10 / 11x8"
+              />
             ) : null}
 
             {showImageOutputControls ? (

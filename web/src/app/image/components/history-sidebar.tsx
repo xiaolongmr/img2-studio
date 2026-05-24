@@ -14,9 +14,11 @@ type HistorySidebarProps = {
   isLoadingHistory: boolean;
   hasActiveTasks: boolean;
   activeConversationIds: Set<string>;
+  activeConversationElapsedSecondsById: Record<string, number>;
   modeLabelMap: Record<ImageMode, string>;
   buildConversationPreviewSource: (conversation: ImageConversation) => string;
   formatConversationTime: (value: string) => string;
+  formatTimerClock: (totalSeconds: number) => string;
   onCreateDraft: () => void;
   onClearHistory: () => Promise<void>;
   onFocusConversation: (id: string) => void;
@@ -40,6 +42,26 @@ function hasSameConversationIdSet(left: Set<string>, right: Set<string>) {
   return true;
 }
 
+function hasSameElapsedMap(
+  left: Record<string, number>,
+  right: Record<string, number>,
+) {
+  if (left === right) {
+    return true;
+  }
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  for (const key of leftKeys) {
+    if (left[key] !== right[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export const HistorySidebar = memo(
   function HistorySidebar({
     conversations,
@@ -47,9 +69,11 @@ export const HistorySidebar = memo(
     isLoadingHistory,
     hasActiveTasks,
     activeConversationIds,
+    activeConversationElapsedSecondsById,
     modeLabelMap,
     buildConversationPreviewSource,
     formatConversationTime,
+    formatTimerClock,
     onCreateDraft,
     onClearHistory,
     onFocusConversation,
@@ -164,6 +188,8 @@ export const HistorySidebar = memo(
                   const active = conversation.id === selectedConversationId;
                   const previewSrc =
                     buildConversationPreviewSource(conversation);
+                  const conversationElapsedSeconds =
+                    activeConversationElapsedSecondsById[conversation.id] ?? 0;
                   return (
                     <div
                       key={conversation.id}
@@ -219,6 +245,11 @@ export const HistorySidebar = memo(
                                 <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-medium text-stone-500">
                                   {modeLabelMap[conversation.mode]}
                                 </span>
+                                {conversationElapsedSeconds > 0 ? (
+                                  <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700">
+                                    生成中 {formatTimerClock(conversationElapsedSeconds)}
+                                  </span>
+                                ) : null}
                                 <span className="truncate text-xs text-stone-400">
                                   {formatConversationTime(conversation.createdAt)}
                                 </span>
@@ -271,10 +302,15 @@ export const HistorySidebar = memo(
         prev.activeConversationIds,
         next.activeConversationIds,
       ) &&
+      hasSameElapsedMap(
+        prev.activeConversationElapsedSecondsById,
+        next.activeConversationElapsedSecondsById,
+      ) &&
       prev.modeLabelMap === next.modeLabelMap &&
       prev.buildConversationPreviewSource ===
         next.buildConversationPreviewSource &&
       prev.formatConversationTime === next.formatConversationTime &&
+      prev.formatTimerClock === next.formatTimerClock &&
       prev.onCreateDraft === next.onCreateDraft &&
       prev.onClearHistory === next.onClearHistory &&
       prev.onFocusConversation === next.onFocusConversation &&

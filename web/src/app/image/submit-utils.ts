@@ -50,6 +50,12 @@ export function createConversationTurn(payload: {
   sourceReference?: InpaintSourceReference;
   images: StoredImage[];
   createdAt: string;
+  startedAt?: string;
+  streamEnabled?: boolean;
+  streamPartialImages?: number;
+  streamPreviewImages?: number;
+  streamPreviewFrames?: number;
+  streamPreviewProgress?: number[];
   status: "queued" | "running" | "generating" | "success" | "error" | "cancelled";
   error?: string;
 }): ImageConversationTurn {
@@ -69,6 +75,12 @@ export function createConversationTurn(payload: {
     sourceReference: payload.sourceReference,
     images: payload.images,
     createdAt: payload.createdAt,
+    startedAt: payload.startedAt,
+    streamEnabled: payload.streamEnabled,
+    streamPartialImages: payload.streamPartialImages,
+    streamPreviewImages: payload.streamPreviewImages,
+    streamPreviewFrames: payload.streamPreviewFrames,
+    streamPreviewProgress: payload.streamPreviewProgress,
     status: payload.status,
     error: payload.error,
   };

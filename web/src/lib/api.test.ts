@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const httpRequestMock = vi.hoisted(() => vi.fn());
 const getStoredApiBaseUrlMock = vi.hoisted(() => vi.fn(() => ""));
 const getImageAsyncRelayForceEnabledMock = vi.hoisted(() => vi.fn(() => false));
+const getImageStreamPartialImagesMock = vi.hoisted(() => vi.fn(() => 1));
+const getStoredAuthKeyMock = vi.hoisted(() => vi.fn(async () => ""));
 const originalWindow = globalThis.window;
 
 vi.mock("@/lib/request", () => ({
@@ -15,12 +17,21 @@ vi.mock("@/constants/common-env", () => ({
   },
 }));
 
+vi.mock("@/store/auth", () => ({
+  getStoredAuthKey: getStoredAuthKeyMock,
+  clearStoredAuthKey: vi.fn(),
+}));
+
 vi.mock("@/store/api-base-url", () => ({
   getStoredApiBaseUrl: getStoredApiBaseUrlMock,
 }));
 
 vi.mock("@/store/image-async-relay", () => ({
   getImageAsyncRelayForceEnabled: getImageAsyncRelayForceEnabledMock,
+}));
+
+vi.mock("@/store/image-stream-preview", () => ({
+  getImageStreamPartialImages: getImageStreamPartialImagesMock,
 }));
 
 import {
@@ -32,14 +43,35 @@ import {
   resolveImageRequestModel,
 } from "./api";
 
+function mockFetchTextResponse(
+  body: string,
+  contentType = "text/event-stream",
+  status = 200,
+) {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers({ "content-type": contentType }),
+    text: vi.fn(async () => body),
+    body: undefined,
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 describe("image API requests", () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     httpRequestMock.mockReset();
     httpRequestMock.mockResolvedValue({ created: 0, data: [] });
     getStoredApiBaseUrlMock.mockReset();
     getStoredApiBaseUrlMock.mockReturnValue("");
     getImageAsyncRelayForceEnabledMock.mockReset();
     getImageAsyncRelayForceEnabledMock.mockReturnValue(false);
+    getImageStreamPartialImagesMock.mockReset();
+    getImageStreamPartialImagesMock.mockReturnValue(1);
+    getStoredAuthKeyMock.mockReset();
+    getStoredAuthKeyMock.mockResolvedValue("");
     if (typeof originalWindow === "undefined") {
       // @ts-expect-error test-only override
       delete globalThis.window;
@@ -102,24 +134,40 @@ describe("image API requests", () => {
     globalThis.window = { location: { origin: "http://localhost:5176" } };
     getStoredApiBaseUrlMock.mockReturnValue("https://api.denxio.top");
     getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    const fetchMock = mockFetchTextResponse(
+      'data: {"type":"image_generation.completed","b64_json":"force-enabled"}',
+    );
 
     await generateImageWithOptions("draw a moon", { count: 1 });
 
-    expect(httpRequestMock).toHaveBeenCalledWith(
-      "/v1/images/generations",
-      expect.objectContaining({
-        method: "POST",
-        headers: {},
-        body: expect.objectContaining({
-          stream: true,
-        }),
-      }),
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(requestInit.headers as HeadersInit);
+    const body = JSON.parse(String(requestInit.body)) as Record<string, unknown>;
+    expect(headers.get("x-rivermoon-async")).toBeNull();
+    expect(body.stream).toBe(true);
+    expect(body.partial_images).toBe(1);
+  });
+
+  it("uses configured partial_images count in stream mode", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    getImageStreamPartialImagesMock.mockReturnValue(3);
+    const fetchMock = mockFetchTextResponse(
+      'data: {"type":"image_generation.completed","b64_json":"partial-count"}',
     );
+
+    await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(requestInit.body)) as Record<string, unknown>;
+    expect(body.stream).toBe(true);
+    expect(body.partial_images).toBe(3);
   });
 
   it("parses SSE stream chunks into an image response", async () => {
     getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
-    httpRequestMock.mockResolvedValueOnce(
+    mockFetchTextResponse(
       [
         'data: {"type":"image_generation.started"}',
         'data: {"type":"image_generation.completed","b64_json":"abc123"}',
@@ -130,6 +178,93 @@ describe("image API requests", () => {
     const result = await generateImageWithOptions("draw a moon", { count: 1 });
 
     expect(result.data).toEqual([{ b64_json: "abc123" }]);
+  });
+
+  it("parses stream responses with partial_image_b64 payloads", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    mockFetchTextResponse(
+      [
+        'data: {"type":"image_generation.partial_image","partial_image_b64":"preview1","partial_image_index":0}',
+        'data: {"type":"image_generation.completed","b64_json":"final456"}',
+        "data: [DONE]",
+      ].join("\n\n"),
+    );
+
+    const result = await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(result.data).toEqual([{ b64_json: "final456" }]);
+  });
+
+  it("parses stream responses that end without [DONE]", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    mockFetchTextResponse(
+      [
+        'data: {"type":"image_generation.partial_image","b64_json":"preview-no-done"}',
+        'data: {"type":"image_generation.completed","b64_json":"final-no-done"}',
+      ].join("\n"),
+    );
+
+    const result = await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(result.data).toEqual([{ b64_json: "final-no-done" }]);
+  });
+
+  it("parses stream responses when preview callback is not provided", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    mockFetchTextResponse(
+      [
+        'data: {"type":"image_generation.partial_image","b64_json":"preview-no-callback"}',
+        'data: {"type":"image_generation.completed","b64_json":"final-no-callback"}',
+      ].join("\n"),
+    );
+
+    const result = await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(result.data).toEqual([{ b64_json: "final-no-callback" }]);
+  });
+
+  it("parses plain JSON stream fallback responses with UTF-8 BOM", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    mockFetchTextResponse(
+      `\uFEFF${JSON.stringify({
+        type: "image_generation.completed",
+        b64_json: "bom-json-final",
+      })}`,
+      "application/json",
+    );
+
+    const result = await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(result.data).toEqual([{ b64_json: "bom-json-final" }]);
+  });
+
+  it("treats image_edit.completed events as final stream responses", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    mockFetchTextResponse(
+      [
+        'data: {"type":"image_generation.partial_image","b64_json":"preview-edit"}',
+        'data: {"type":"image_edit.completed","b64_json":"final-edit"}',
+      ].join("\n"),
+    );
+
+    const result = await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(result.data).toEqual([{ b64_json: "final-edit" }]);
+  });
+
+  it("parses plain JSON stream fallback responses with top-level b64_json", async () => {
+    getImageAsyncRelayForceEnabledMock.mockReturnValue(true);
+    mockFetchTextResponse(
+      JSON.stringify({
+        type: "image_generation.completed",
+        b64_json: "plain-json-final",
+      }),
+      "application/json",
+    );
+
+    const result = await generateImageWithOptions("draw a moon", { count: 1 });
+
+    expect(result.data).toEqual([{ b64_json: "plain-json-final" }]);
   });
 
   it("sends PNG image generation requests without compression", async () => {

@@ -29,6 +29,7 @@ export type StoredSourceImage = {
 export type StoredImage = {
   id: string;
   status?: "loading" | "success" | "error";
+  streamPreview?: boolean;
   b64_json?: string;
   mime_type?: string;
   url?: string;
@@ -74,6 +75,11 @@ export type ImageConversationTurn = {
   waitingSince?: string;
   startedAt?: string;
   finishedAt?: string;
+  streamEnabled?: boolean;
+  streamPartialImages?: number;
+  streamPreviewImages?: number;
+  streamPreviewFrames?: number;
+  streamPreviewProgress?: number[];
   cancelRequested?: boolean;
 };
 
@@ -328,6 +334,33 @@ function normalizeImageOutputFormat(value: unknown): ImageOutputFormat | undefin
     : undefined;
 }
 
+function normalizeStreamPartialImages(value: unknown): number | undefined {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return undefined;
+  }
+  return Math.min(3, Math.max(0, Math.floor(numeric)));
+}
+
+function normalizePreviewCounter(value: unknown): number | undefined {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return undefined;
+  }
+  return Math.floor(numeric);
+}
+
+function normalizePreviewProgress(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized = value
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item) && item > 0)
+    .map((item) => Math.floor(item));
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function normalizeImageModel(value: unknown): ImageModel {
   if (value === PUBLIC_4K_IMAGE_MODEL) {
     return PUBLIC_4K_IMAGE_MODEL;
@@ -356,6 +389,12 @@ function normalizeTurn(turn: ImageConversationTurn): ImageConversationTurn {
     outputFormat: normalizeImageOutputFormat(turn.outputFormat),
     sourceImages: Array.isArray(turn.sourceImages) ? turn.sourceImages : [],
     sourceReference: normalizeSourceReference(turn.sourceReference),
+    streamEnabled:
+      typeof turn.streamEnabled === "boolean" ? turn.streamEnabled : undefined,
+    streamPartialImages: normalizeStreamPartialImages(turn.streamPartialImages),
+    streamPreviewImages: normalizePreviewCounter(turn.streamPreviewImages),
+    streamPreviewFrames: normalizePreviewCounter(turn.streamPreviewFrames),
+    streamPreviewProgress: normalizePreviewProgress(turn.streamPreviewProgress),
     images: (turn.images || []).map(normalizeStoredImage),
     status:
       turn.status === "queued" ||

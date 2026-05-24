@@ -8,11 +8,14 @@ import {
   generateImageWithOptions,
   PUBLIC_IMAGE_MODEL,
   resolveImageRequestModel,
+  type ImageStreamPreviewEvent,
   type ImageModel,
   type ImageOutputFormat,
   type ImageQuality,
   type ImageResolutionAccess,
 } from "@/lib/api";
+import { getImageAsyncRelayForceEnabled } from "@/store/image-async-relay";
+import { getImageStreamPartialImages } from "@/store/image-stream-preview";
 import type {
   ImageConversation,
   ImageConversationTurn,
@@ -188,7 +191,12 @@ function mergeRetryImageResult(
     return currentImages;
   }
   return currentImages.map((image, index) =>
-    index === retryImageIndex ? (resultImages[0] ?? image) : image,
+    index === retryImageIndex
+      ? {
+          ...(resultImages[0] ?? image),
+          streamPreview: false,
+        }
+      : image,
   );
 }
 
@@ -198,6 +206,18 @@ function getTurnStatusFromImages(images: StoredImage[]) {
 
 function getTurnErrorFromImages(images: StoredImage[]) {
   return images.find((image) => image.status === "error")?.error;
+}
+
+function asFinalImage(image: StoredImage): StoredImage {
+  return image.streamPreview ? { ...image, streamPreview: false } : image;
+}
+
+function normalizeStreamPartialImagesCount(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 1;
+  }
+  return Math.min(3, Math.max(0, Math.floor(numeric)));
 }
 
 export function useImageSubmit({
@@ -240,18 +260,19 @@ export function useImageSubmit({
     ) => {
       const status = getTurnStatusFromImages(images);
       const error = getTurnErrorFromImages(images);
+      const finalImages = images.map(asFinalImage);
       await updateConversation(conversationId, (current) => ({
         ...(current ?? buildConversationBase(conversationId, draftTurn)),
         status,
         error,
-        images,
+        images: finalImages,
         turns: (current?.turns ?? [draftTurn]).map((turn) =>
           turn.id === turnId
             ? {
                 ...turn,
                 status,
                 error,
-                images,
+                images: finalImages,
                 finishedAt: new Date().toISOString(),
               }
             : turn,
@@ -308,7 +329,7 @@ export function useImageSubmit({
             return turn;
           }
           const images = [...turn.images];
-          images[imageIndex] = image;
+            images[imageIndex] = image;
           return {
             ...turn,
             images,
@@ -323,6 +344,80 @@ export function useImageSubmit({
       });
     },
     [updateConversation],
+  );
+
+  const previewTurnImage = useCallback(
+    async (
+      conversationId: string,
+      turnId: string,
+      draftTurn: ImageConversationTurn,
+      imageIndex: number,
+      preview: ImageStreamPreviewEvent,
+      outputFormat: ImageOutputFormat,
+    ) => {
+      if (!preview?.b64_json) {
+        return;
+      }
+      await replaceTurnImage(conversationId, turnId, draftTurn, imageIndex, {
+        id: `${turnId}-${imageIndex}`,
+        status: "success",
+        streamPreview: true,
+        b64_json: preview.b64_json,
+        mime_type:
+          outputFormat === "jpeg"
+            ? "image/jpeg"
+            : outputFormat === "webp"
+              ? "image/webp"
+              : "image/png",
+      });
+      await updateConversation(conversationId, (current) => {
+        const base = current ?? buildConversationBase(conversationId, draftTurn);
+        const turns = (base.turns ?? [draftTurn]).map((turn) => {
+          if (turn.id !== turnId) {
+            return turn;
+          }
+          const progress = Array.isArray(turn.streamPreviewProgress)
+            ? [...turn.streamPreviewProgress]
+            : [];
+          const previewTarget =
+            typeof turn.streamPartialImages === "number" &&
+            Number.isFinite(turn.streamPartialImages)
+              ? Math.max(0, Math.floor(turn.streamPartialImages))
+              : 0;
+          const incomingIndex =
+            typeof preview.partial_image_index === "number" &&
+            Number.isFinite(preview.partial_image_index)
+              ? Math.max(0, Math.floor(preview.partial_image_index)) + 1
+              : 1;
+          const normalizedIndex =
+            previewTarget > 0
+              ? Math.min(previewTarget, incomingIndex)
+              : incomingIndex;
+          if (!progress.includes(normalizedIndex)) {
+            progress.push(normalizedIndex);
+          }
+          progress.sort((left, right) => left - right);
+          const nextPreviewFrames = progress.length;
+          const currentImages = Array.isArray(turn.images) ? turn.images : [];
+          const nextPreviewImages = currentImages.filter((candidate) =>
+            candidate.streamPreview,
+          ).length;
+          return {
+            ...turn,
+            streamPreviewFrames: nextPreviewFrames,
+            streamPreviewImages: nextPreviewImages > 0 ? nextPreviewImages : undefined,
+            streamPreviewProgress: progress.length > 0 ? progress : undefined,
+          };
+        });
+        const latestTurn = turns[turns.length - 1] ?? draftTurn;
+        return {
+          ...base,
+          images: latestTurn.id === turnId ? latestTurn.images : base.images,
+          turns,
+        };
+      });
+    },
+    [replaceTurnImage, updateConversation],
   );
 
   const handleSelectionEditSubmit = useCallback(
@@ -353,6 +448,10 @@ export function useImageSubmit({
       const nextQuality = normalizeImageQuality(overrideQuality, imageQuality);
       const turnId = makeId();
       const now = new Date().toISOString();
+      const streamEnabled = getImageAsyncRelayForceEnabled();
+      const streamPartialImages = streamEnabled
+        ? normalizeStreamPartialImagesCount(getImageStreamPartialImages())
+        : 0;
       const selectionSourceImage = buildSourceReference({
         id: makeId(),
         role: "image",
@@ -382,6 +481,9 @@ export function useImageSubmit({
         ],
         images: createLoadingImages(1, turnId),
         createdAt: now,
+        startedAt: now,
+        streamEnabled,
+        streamPartialImages,
         status: "running",
       });
 
@@ -546,6 +648,18 @@ export function useImageSubmit({
         sourceReference: turn.sourceReference,
         images: nextImages,
         createdAt: new Date().toISOString(),
+        startedAt: turn.startedAt || new Date().toISOString(),
+        streamEnabled:
+          typeof turn.streamEnabled === "boolean"
+            ? turn.streamEnabled
+            : getImageAsyncRelayForceEnabled(),
+        streamPartialImages:
+          typeof turn.streamPartialImages === "number"
+            ? turn.streamPartialImages
+            : normalizeStreamPartialImagesCount(getImageStreamPartialImages()),
+        streamPreviewImages: 0,
+        streamPreviewFrames: 0,
+        streamPreviewProgress: [],
         status: "running",
       });
 
@@ -576,7 +690,7 @@ export function useImageSubmit({
           ? await sourceMaskToFile(turnMaskSource)
           : null;
       const requestPrompt = buildReferencedImagePrompt(prompt, turnImageSources);
-      const requestOneImage = () =>
+      const requestOneImage = (requestIndex: number) =>
           usesEditEndpoint
             ? editImage({
                 prompt: requestPrompt,
@@ -588,6 +702,15 @@ export function useImageSubmit({
                 count: 1,
                 outputFormat: turnOutputFormat,
                 outputCompression,
+                onPartialImage: (preview) =>
+                  void previewTurnImage(
+                    conversationId,
+                    turn.id,
+                    draftTurn,
+                    imageIndex >= 0 ? imageIndex : requestIndex,
+                    preview,
+                    turnOutputFormat,
+                  ),
               })
             : generateImageWithOptions(requestPrompt, {
                 model: PUBLIC_IMAGE_MODEL,
@@ -596,6 +719,15 @@ export function useImageSubmit({
                 quality: turnQuality,
                 outputFormat: turnOutputFormat,
                 outputCompression,
+                onPartialImage: (preview) =>
+                  void previewTurnImage(
+                    conversationId,
+                    turn.id,
+                    draftTurn,
+                    imageIndex >= 0 ? imageIndex : requestIndex,
+                    preview,
+                    turnOutputFormat,
+                  ),
               });
         const finalImages = isSingleImageRetry
           ? mergeRetryImageResult(
@@ -617,7 +749,7 @@ export function useImageSubmit({
                 ? IMAGE_EDIT_FAN_OUT_CONCURRENCY
                 : IMAGE_FAN_OUT_CONCURRENCY,
               outputFormat: turnOutputFormat,
-              requestImage: requestOneImage,
+              requestImage: (index) => requestOneImage(index),
               onImageSettled: (image, index) =>
                 replaceTurnImage(conversationId, turn.id, draftTurn, index, image),
             });
@@ -671,6 +803,7 @@ export function useImageSubmit({
       onRequestFinish,
       onRequestStart,
       outputCompression,
+      previewTurnImage,
       replaceTurnImage,
       setSubmitElapsedSeconds,
       updateConversation,
@@ -695,6 +828,11 @@ export function useImageSubmit({
 
     const conversationId = selectedConversationId ?? makeId();
     const turnId = makeId();
+    const now = new Date().toISOString();
+    const streamEnabled = getImageAsyncRelayForceEnabled();
+    const streamPartialImages = streamEnabled
+      ? normalizeStreamPartialImagesCount(getImageStreamPartialImages())
+      : 0;
     const expectedCount = mode === "generate" ? parsedCount : 1;
     const requestPrompt = buildReferencedImagePrompt(prompt, imageSources);
     const draftTurn = createConversationTurn({
@@ -710,7 +848,13 @@ export function useImageSubmit({
       outputFormat: imageOutputFormat,
       sourceImages,
       images: createLoadingImages(expectedCount, turnId),
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      startedAt: now,
+      streamEnabled,
+      streamPartialImages,
+      streamPreviewImages: 0,
+      streamPreviewFrames: 0,
+      streamPreviewProgress: [],
       status: "running",
     });
 
@@ -753,7 +897,7 @@ export function useImageSubmit({
           ? IMAGE_EDIT_FAN_OUT_CONCURRENCY
           : IMAGE_FAN_OUT_CONCURRENCY,
         outputFormat: imageOutputFormat,
-        requestImage: () =>
+        requestImage: (requestIndex) =>
           usesEditEndpoint
             ? editImage({
                 prompt: requestPrompt,
@@ -765,6 +909,15 @@ export function useImageSubmit({
                 count: 1,
                 outputFormat: imageOutputFormat,
                 outputCompression,
+                onPartialImage: (preview) =>
+                  void previewTurnImage(
+                    conversationId,
+                    turnId,
+                    draftTurn,
+                    requestIndex,
+                    preview,
+                    imageOutputFormat,
+                  ),
               })
             : generateImageWithOptions(requestPrompt, {
                 model: PUBLIC_IMAGE_MODEL,
@@ -773,6 +926,15 @@ export function useImageSubmit({
                 quality: imageQuality,
                 outputFormat: imageOutputFormat,
                 outputCompression,
+                onPartialImage: (preview) =>
+                  void previewTurnImage(
+                    conversationId,
+                    turnId,
+                    draftTurn,
+                    requestIndex,
+                    preview,
+                    imageOutputFormat,
+                  ),
               }),
         onImageSettled: (image, index) =>
           replaceTurnImage(conversationId, turnId, draftTurn, index, image),
@@ -815,6 +977,7 @@ export function useImageSubmit({
     outputCompression,
     parsedCount,
     persistConversation,
+    previewTurnImage,
     replaceTurnImage,
     resetComposer,
     selectedConversationId,

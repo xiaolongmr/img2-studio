@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ChevronLeft, ImageIcon, LogOut, PanelLeftClose, PanelLeftOpen, Settings2 } from "lucide-react";
+import {
+  BookText,
+  ChevronLeft,
+  ImageIcon,
+  LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings2,
+} from "lucide-react";
 
 import { fetchVersionInfo } from "@/lib/api";
 import { clearStoredAuthKey } from "@/store/auth";
@@ -10,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { ThemeToggleButton } from "@/components/theme-toggle-button";
 
 const repositoryUrl = "https://github.com/peiyizhi0724/ChatGpt-Image-Studio";
+const DESKTOP_NAV_COLLAPSED_KEY = "studio.desktop-nav.collapsed.v1";
 
 function formatVersionLabel(value: string) {
   const normalized = String(value || "").trim();
@@ -27,6 +36,7 @@ function formatVersionLabel(value: string) {
 
 const navItems = [
   { href: "/image/history", matchPrefix: "/image", label: "图片工作台", description: "生成与编辑", icon: ImageIcon },
+  { href: "/prompt-library", matchPrefix: "/prompt-library", label: "提示词库", description: "选择与上传", icon: BookText },
   { href: "/settings", matchPrefix: "/settings", label: "本地设置", description: "NewAPI key", icon: Settings2 },
 ] as const;
 
@@ -58,7 +68,37 @@ type DesktopTopNavProps = {
 };
 
 function DesktopTopNav({ pathname, defaultCollapsed, versionLabel, onLogout }: DesktopTopNavProps) {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === "undefined") {
+      return defaultCollapsed;
+    }
+    try {
+      const raw = window.localStorage.getItem(DESKTOP_NAV_COLLAPSED_KEY);
+      if (raw === "1") {
+        return true;
+      }
+      if (raw === "0") {
+        return false;
+      }
+    } catch {
+      // ignore localStorage read failures
+    }
+    return defaultCollapsed;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        DESKTOP_NAV_COLLAPSED_KEY,
+        collapsed ? "1" : "0",
+      );
+    } catch {
+      // ignore localStorage write failures
+    }
+  }, [collapsed]);
 
   return (
     <aside className={cn("hidden shrink-0 transition-[width] duration-200 lg:flex", collapsed ? "w-[92px]" : "w-[228px]")}>
@@ -442,7 +482,6 @@ export function TopNav() {
         </div>
       ) : null}
       <DesktopTopNav
-        key={isImageRoute ? "image-route" : "non-image-route"}
         pathname={pathname}
         defaultCollapsed={isImageRoute}
         versionLabel={versionLabel}

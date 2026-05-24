@@ -4,6 +4,7 @@ import ImagePage from "@/app/image/page";
 import AppShell from "@/app/layout";
 import LoginPage from "@/app/login/page";
 import HomePage from "@/app/page";
+import PromptLibraryPage from "@/app/prompt-library/page";
 import SettingsPage from "@/app/settings/page";
 
 export default function App() {
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/image" element={<Navigate to="/image/history" replace />} />
         <Route path="/image/history" element={<ImagePage />} />
         <Route path="/image/workspace" element={<ImagePage />} />
+        <Route path="/prompt-library" element={<PromptLibraryPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/accounts" element={<Navigate to="/image/history" replace />} />
         <Route path="/startup-check" element={<Navigate to="/image/history" replace />} />

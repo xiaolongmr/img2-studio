@@ -14,13 +14,18 @@ function normalizeImageURL(url?: string) {
 }
 
 export function buildImageDataUrl(image: StoredImage) {
+  const cached = imageDataUrlCache.get(image);
+  if (typeof cached === "string") {
+    return cached;
+  }
+  let nextValue = "";
   if (image.url) {
-    return normalizeImageURL(image.url);
+    nextValue = normalizeImageURL(image.url);
+  } else if (image.b64_json) {
+    nextValue = `data:${image.mime_type || "image/png"};base64,${image.b64_json}`;
   }
-  if (!image.b64_json) {
-    return "";
-  }
-  return `data:${image.mime_type || "image/png"};base64,${image.b64_json}`;
+  imageDataUrlCache.set(image, nextValue);
+  return nextValue;
 }
 
 export function buildSourceImageUrl(source: StoredSourceImage) {
@@ -32,13 +37,24 @@ export function buildConversationSourceLabel(source: StoredSourceImage) {
 }
 
 export function buildConversationPreviewSource(conversation: ImageConversation) {
+  const cached = conversationPreviewSourceCache.get(conversation);
+  if (typeof cached === "string") {
+    return cached;
+  }
   const latestSuccessfulImage = conversation.images.find(
     (image) => image.status === "success" && (image.b64_json || image.url),
   );
   if (latestSuccessfulImage) {
-    return buildImageDataUrl(latestSuccessfulImage);
+    const nextValue = buildImageDataUrl(latestSuccessfulImage);
+    conversationPreviewSourceCache.set(conversation, nextValue);
+    return nextValue;
   }
 
   const firstSourceImage = conversation.sourceImages?.find((item) => item.role === "image");
-  return firstSourceImage ? buildSourceImageUrl(firstSourceImage) : "";
+  const nextValue = firstSourceImage ? buildSourceImageUrl(firstSourceImage) : "";
+  conversationPreviewSourceCache.set(conversation, nextValue);
+  return nextValue;
 }
+
+const imageDataUrlCache = new WeakMap<StoredImage, string>();
+const conversationPreviewSourceCache = new WeakMap<ImageConversation, string>();

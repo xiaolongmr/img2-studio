@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -7,28 +7,72 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { login } from "@/lib/api";
+import { fetchAvailableModels, login } from "@/lib/api";
 import { getStoredApiBaseUrl, setStoredApiBaseUrl } from "@/store/api-base-url";
 import { setStoredAuthKey } from "@/store/auth";
+import {
+  getStoredImageModel,
+  getStoredImageModels,
+  setStoredImageModel,
+  setStoredImageModels,
+} from "@/store/image-model";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const [apiBaseUrl, setApiBaseUrl] = useState(getStoredApiBaseUrl());
   const [authKey, setAuthKey] = useState("");
+  const [availableModels, setAvailableModels] = useState<string[]>(
+    getStoredImageModels(),
+  );
+  const [selectedModel, setSelectedModel] = useState(getStoredImageModel());
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleFetchModels = async () => {
+    const normalizedAuthKey = authKey.trim();
+    if (!normalizedAuthKey) {
+      toast.error("请输入 API 密钥");
+      return;
+    }
+    setIsLoadingModels(true);
+    try {
+      setStoredApiBaseUrl(apiBaseUrl);
+      const models = await fetchAvailableModels(normalizedAuthKey);
+      setAvailableModels(models);
+      setStoredImageModels(models);
+      if (models.length === 0) {
+        toast.error("未获取到可用模型");
+        return;
+      }
+      if (!models.includes(selectedModel)) {
+        setSelectedModel(models.includes("gpt-image-2") ? "gpt-image-2" : models[0]);
+      }
+      toast.success(`已获取 ${models.length} 个模型`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "获取模型失败");
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
 
   const handleLogin = async () => {
     const normalizedAuthKey = authKey.trim();
     if (!normalizedAuthKey) {
-      toast.error("请输入 NewAPI key");
+      toast.error("请输入 API 密钥");
+      return;
+    }
+    const model = String(selectedModel || "").trim();
+    if (!model) {
+      toast.error("请先选择模型");
       return;
     }
 
     setIsSubmitting(true);
     try {
       setStoredApiBaseUrl(apiBaseUrl);
-      await login(normalizedAuthKey);
+      await login(normalizedAuthKey, model);
       await setStoredAuthKey(normalizedAuthKey);
+      setStoredImageModel(model);
       navigate("/image", { replace: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : "登录失败";
@@ -48,7 +92,7 @@ export default function LoginPage() {
             </span>
             <div>
               <div className="text-sm font-semibold tracking-tight">Rivermoon Image Studio</div>
-              <div className="mt-1 text-xs text-white/65">gpt-image-2 图片生成与编辑工作区</div>
+              <div className="mt-1 text-xs text-white/65">模型可选的图片工作台</div>
             </div>
           </div>
 
@@ -56,32 +100,19 @@ export default function LoginPage() {
             <div className="space-y-3">
               <div className="text-sm font-medium uppercase tracking-[0.24em] text-white/55">Image Studio</div>
               <h1 className="max-w-[420px] text-[40px] font-semibold leading-[1.1] tracking-tight">
-                在一个界面里完成生成、编辑与本机历史。
+                先拉取模型，再选择模型进入工作台。
               </h1>
               <p className="max-w-[430px] text-sm leading-7 text-white/72">
-                输入你的 NewAPI key 后直接进入图片工作台。请求只调用 gpt-image-2，并按该用户的钱包额度计费。
+                与 `curl /v1/models` 一致，直接从你的 API URL 拉可用模型。
               </p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              {[
-                ["生成", "从提示词或参考图开始"],
-                ["编辑", "继续改图，保留上下文"],
-                ["历史", "浏览器本地保存记录"],
-              ].map(([title, desc]) => (
-                <div key={title} className="rounded-2xl border border-white/12 bg-white/6 p-4 backdrop-blur-sm">
-                  <div className="text-sm font-semibold">{title}</div>
-                  <div className="mt-2 text-xs leading-6 text-white/65">{desc}</div>
-                </div>
-              ))}
             </div>
           </div>
 
-          <div className="text-xs text-white/50">密钥只保存在当前浏览器本地，不注入服务器后台密钥。</div>
+          <div className="text-xs text-white/50">密钥只保存在当前浏览器本地，不注入服务端后台。</div>
         </div>
 
         <div className="flex items-center justify-center px-5 py-8 sm:px-8 lg:px-10">
-          <div className="w-full max-w-[420px] space-y-8">
+          <div className="w-full max-w-[420px] space-y-6">
             <div className="space-y-4">
               <div className="inline-flex size-14 items-center justify-center rounded-[18px] bg-stone-950 text-white shadow-sm">
                 <LockKeyhole className="size-5" />
@@ -89,7 +120,7 @@ export default function LoginPage() {
               <div className="space-y-2">
                 <h1 className="text-3xl font-semibold tracking-tight text-stone-950">进入图片工作区</h1>
                 <p className="text-sm leading-7 text-stone-500">
-                  输入你的 API URL 和 NewAPI key，验证 gpt-image-2 可用后开始生成。
+                  输入 API URL 与 API 密钥，先获取模型列表，再选择模型验证登录。
                 </p>
               </div>
             </div>
@@ -109,21 +140,50 @@ export default function LoginPage() {
 
             <div className="space-y-3">
               <label htmlFor="auth-key" className="block text-sm font-medium text-stone-700">
-                NewAPI key
+                API 密钥
               </label>
               <Input
                 id="auth-key"
                 type="password"
                 value={authKey}
                 onChange={(event) => setAuthKey(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    void handleLogin();
-                  }
-                }}
                 placeholder="sk-..."
                 className="h-13 rounded-2xl border-stone-200 bg-stone-50 px-4 shadow-none focus-visible:ring-1"
               />
+            </div>
+
+            <div className="space-y-3">
+              <label htmlFor="model-select" className="block text-sm font-medium text-stone-700">
+                生图模型
+              </label>
+              <div className="flex gap-2">
+                <select
+                  id="model-select"
+                  value={selectedModel}
+                  onChange={(event) => setSelectedModel(event.target.value)}
+                  className="h-13 flex-1 rounded-2xl border border-stone-200 bg-stone-50 px-4 text-sm"
+                >
+                  {availableModels.length === 0 ? (
+                    <option value={selectedModel || ""}>请先获取模型列表</option>
+                  ) : (
+                    availableModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))
+                  )}
+                </select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-13 rounded-2xl"
+                  onClick={() => void handleFetchModels()}
+                  disabled={isLoadingModels}
+                >
+                  {isLoadingModels ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                  获取模型
+                </Button>
+              </div>
             </div>
 
             <Button
@@ -136,7 +196,7 @@ export default function LoginPage() {
             </Button>
 
             <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-4 text-xs leading-6 text-stone-500">
-              本页面只验证 `/v1/models` 是否可见 `gpt-image-2`，不会读取或展示你的密钥。
+              本页面会调用 `/v1/models`，并验证你选择的模型是否可用。
             </div>
 
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-950">
@@ -145,7 +205,7 @@ export default function LoginPage() {
                 使用与风险提示
               </div>
               <div className="mt-2">
-                请确认你使用的是自己的 NewAPI key。所有图片生成和编辑都会按该 NewAPI 用户钱包计费。
+                请确认你使用的是自己的 API 密钥，所有请求都按你的密钥账户计费。
               </div>
             </div>
           </div>

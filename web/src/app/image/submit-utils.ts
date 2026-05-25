@@ -136,6 +136,24 @@ function mimeTypeFromBase64Image(b64Json: string | undefined) {
   return "";
 }
 
+function normalizeResultImagePayload(item: {
+  url?: string;
+  b64_json?: string;
+}) {
+  const url = String(item.url || "").trim();
+  const b64 = String(item.b64_json || "").trim();
+  if (url) {
+    return {
+      url,
+      b64_json: undefined as string | undefined,
+    };
+  }
+  return {
+    url: undefined as string | undefined,
+    b64_json: b64 || undefined,
+  };
+}
+
 export function mergeResultImages(
   conversationId: string,
   items: Array<{
@@ -156,8 +174,7 @@ export function mergeResultImages(
       ? {
           id: `${conversationId}-${index}`,
           status: "success",
-          b64_json: item.b64_json,
-          url: item.url,
+          ...normalizeResultImagePayload(item),
           mime_type: item.b64_json
             ? mimeTypeFromBase64Image(item.b64_json) ||
               mimeTypeFromOutputFormat(outputFormat)
@@ -197,8 +214,7 @@ export function mergeSingleResultImage(
     return {
       id: `${conversationId}-${index}`,
       status: "success",
-      b64_json: item.b64_json,
-      url: item.url,
+      ...normalizeResultImagePayload(item),
       mime_type: item.b64_json
         ? mimeTypeFromBase64Image(item.b64_json) ||
           mimeTypeFromOutputFormat(outputFormat)

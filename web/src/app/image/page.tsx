@@ -16,7 +16,6 @@ import { toast } from "sonner";
 
 import { ImageEditModal } from "@/components/image-edit-modal";
 import {
-  PUBLIC_IMAGE_MODEL,
   type Account,
   type ImageOutputFormat,
   type ImageTaskSnapshot,
@@ -35,6 +34,7 @@ import {
   type StoredImage,
 } from "@/store/image-conversations";
 import { consumePendingPromptForWorkspace } from "@/store/prompt-library";
+import { getStoredImageModel, setStoredImageModel } from "@/store/image-model";
 import { ConversationTurns } from "./components/conversation-turns";
 import { EmptyState } from "./components/empty-state";
 import { HistorySidebar } from "./components/history-sidebar";
@@ -695,6 +695,7 @@ export default function ImagePage() {
   const previousSelectedConversationIdRef = useRef<string | null>(null);
   const previousTurnCountRef = useRef(0);
   const previousLastTurnKeyRef = useRef("");
+  const detailMountFrameRef = useRef<number | null>(null);
   const historyResizeStateRef = useRef<{
     startX: number;
     startWidth: number;
@@ -705,6 +706,9 @@ export default function ImagePage() {
   } | null>(null);
 
   const [mode, setMode] = useState<ImageMode>("generate");
+  const [selectedImageModel, setSelectedImageModel] = useState(() =>
+    getStoredImageModel(),
+  );
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageCount, setImageCount] = useState("1");
   const [imageAspectRatio, setImageAspectRatio] =
@@ -724,7 +728,6 @@ export default function ImagePage() {
       ? window.matchMedia("(min-width: 1024px)").matches
       : false,
   );
-  const [availableQuota] = useState("NewAPI 钱包");
   const [availableAccounts, setAvailableAccounts] = useState<Account[]>([]);
   const [allowDisabledStudioAccounts, setAllowDisabledStudioAccounts] =
     useState(false);
@@ -741,6 +744,8 @@ export default function ImagePage() {
   const [directActiveRequests, setDirectActiveRequests] = useState<
     RunningActiveRequestState[]
   >([]);
+  const [isConversationDetailMounted, setIsConversationDetailMounted] =
+    useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isMobileComposerCollapsed, setIsMobileComposerCollapsed] =
     useState(true);
@@ -805,6 +810,8 @@ export default function ImagePage() {
     directActiveRequests[directActiveRequests.length - 1]?.conversationId ??
     null;
   const hasActiveTasks = directActiveRequests.length > 0;
+  const shouldAutoSelectFirstConversation =
+    !isDesktopLayout && pathname.endsWith("/workspace");
   const {
     conversations,
     selectedConversationId,
@@ -823,6 +830,7 @@ export default function ImagePage() {
     draftSelectionRef,
     activeConversationIds,
     preferredActiveConversationId,
+    autoSelectFirstConversation: shouldAutoSelectFirstConversation,
   });
   const {
     sourceImages,
@@ -859,19 +867,38 @@ export default function ImagePage() {
     return next;
   }, [activeTaskByTurnKey, selectedConversationId]);
 
-  const displayedConversations = useMemo(() => {
-    const tasksByTurnKey = new Map<string, ImageTaskView[]>();
+  const tasksByTurnKey = useMemo(() => {
+    if (taskItems.length === 0) {
+      return null;
+    }
+    const next = new Map<string, ImageTaskView[]>();
     taskItems.forEach((task) => {
       const key = `${task.conversationId}:${task.turnId}`;
-      const current = tasksByTurnKey.get(key) ?? [];
+      const current = next.get(key) ?? [];
       current.push(task);
       current.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-      tasksByTurnKey.set(key, current);
+      next.set(key, current);
     });
-    return conversations.map((conversation) =>
-      applyTaskViewToConversation(conversation, tasksByTurnKey),
-    );
-  }, [conversations, taskItems]);
+    return next;
+  }, [taskItems]);
+  const displayedConversations = useMemo(() => {
+    if (!tasksByTurnKey || tasksByTurnKey.size === 0) {
+      return conversations;
+    }
+    let hasOverlay = false;
+    const next = conversations.map((conversation) => {
+      const turns = conversation.turns ?? [];
+      const hasTask = turns.some((turn) =>
+        tasksByTurnKey.has(`${conversation.id}:${turn.id}`),
+      );
+      if (!hasTask) {
+        return conversation;
+      }
+      hasOverlay = true;
+      return applyTaskViewToConversation(conversation, tasksByTurnKey);
+    });
+    return hasOverlay ? next : conversations;
+  }, [conversations, tasksByTurnKey]);
   const restoredActiveRequests = useMemo<RunningActiveRequestState[]>(() => {
     const restored: RunningActiveRequestState[] = [];
     for (const conversation of displayedConversations) {
@@ -904,7 +931,7 @@ export default function ImagePage() {
   );
   const effectiveHasActiveTasks = effectiveActiveRequests.length > 0;
   const activeRequestElapsedSecondsByTurnId = useMemo(() => {
-    const now = Date.now();
+    const now = Date.now() + submitElapsedSeconds * 0;
     const next: Record<string, number> = {};
     for (const request of effectiveActiveRequests) {
       next[request.turnId] = Math.max(
@@ -932,6 +959,39 @@ export default function ImagePage() {
       null,
     [displayedConversations, selectedConversationId],
   );
+
+  useEffect(() => {
+    if (detailMountFrameRef.current != null) {
+      window.cancelAnimationFrame(detailMountFrameRef.current);
+      detailMountFrameRef.current = null;
+    }
+
+    if (!selectedConversationId) {
+      setIsConversationDetailMounted(false);
+      return;
+    }
+
+    setIsConversationDetailMounted(false);
+    const firstFrame = window.requestAnimationFrame(() => {
+      const secondFrame = window.requestAnimationFrame(() => {
+        detailMountFrameRef.current = null;
+        if (!mountedRef.current) {
+          return;
+        }
+        setIsConversationDetailMounted(true);
+      });
+      detailMountFrameRef.current = secondFrame;
+    });
+    detailMountFrameRef.current = firstFrame;
+
+    return () => {
+      if (detailMountFrameRef.current != null) {
+        window.cancelAnimationFrame(detailMountFrameRef.current);
+        detailMountFrameRef.current = null;
+      }
+    };
+  }, [selectedConversationId]);
+
   const currentImageView = useMemo<"history" | "workspace">(
     () => (pathname.endsWith("/workspace") ? "workspace" : "history"),
     [pathname],
@@ -1129,7 +1189,7 @@ export default function ImagePage() {
           </div>
           <div className="mt-2">
             <span className="font-semibold text-stone-800">计费：</span>
-            所有请求使用当前浏览器保存的 NewAPI key，按该用户钱包扣费。
+            所有请求使用当前浏览器保存的 API 密钥，按该用户钱包扣费。
           </div>
           <div className="mt-2">
             <span className="font-semibold text-stone-800">格式：</span>
@@ -1168,8 +1228,37 @@ export default function ImagePage() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      if (detailMountFrameRef.current != null) {
+        window.cancelAnimationFrame(detailMountFrameRef.current);
+        detailMountFrameRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    const pendingPrompt = consumePendingPromptForWorkspace();
+    if (!pendingPrompt) {
+      return;
+    }
+    if (pendingPrompt.model) {
+      setSelectedImageModel(pendingPrompt.model);
+      setStoredImageModel(pendingPrompt.model);
+    }
+    setMode(pendingPrompt.mode === "edit" ? "edit" : "generate");
+    setImagePrompt(pendingPrompt.prompt);
+    setImageCount("1");
+    setSourceImages([]);
+    openDraftConversation();
+    if (!pathname.endsWith("/workspace")) {
+      navigate("/image/workspace", { replace: true });
+    }
+    const frame = window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [navigate, openDraftConversation, pathname, setSourceImages]);
 
   useEffect(() => {
     const media = window.matchMedia("(min-width: 1024px)");
@@ -1344,12 +1433,46 @@ export default function ImagePage() {
   }, [isDesktopLayout]);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      void refreshHistory({ normalize: true, withLoading: true });
-    });
+    let cancelled = false;
+    let idleHandle: number | null = null;
+    let timeoutHandle: number | null = null;
+
+    const runRefresh = () => {
+      if (cancelled) {
+        return;
+      }
+      void refreshHistory({ withLoading: true });
+    };
+
+    if ("requestIdleCallback" in window) {
+      const requestIdle = (
+        window as Window & {
+          requestIdleCallback?: (
+            callback: IdleRequestCallback,
+            options?: IdleRequestOptions,
+          ) => number;
+        }
+      ).requestIdleCallback;
+      idleHandle = requestIdle?.(() => {
+        runRefresh();
+      }, { timeout: 800 }) ?? null;
+    } else {
+      timeoutHandle = window.setTimeout(runRefresh, 0);
+    }
 
     return () => {
-      window.cancelAnimationFrame(frame);
+      cancelled = true;
+      if (idleHandle != null && "cancelIdleCallback" in window) {
+        const cancelIdle = (
+          window as Window & {
+            cancelIdleCallback?: (handle: number) => void;
+          }
+        ).cancelIdleCallback;
+        cancelIdle?.(idleHandle);
+      }
+      if (timeoutHandle != null) {
+        window.clearTimeout(timeoutHandle);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1588,21 +1711,6 @@ export default function ImagePage() {
   }, [imagePrompt, mode]);
 
   useEffect(() => {
-    const pendingPrompt = consumePendingPromptForWorkspace();
-    if (!pendingPrompt) {
-      return;
-    }
-    setMode(pendingPrompt.mode === "edit" ? "edit" : "generate");
-    setImagePrompt(pendingPrompt.prompt);
-    openDraftConversation();
-    setSourceImages([]);
-    window.requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-    });
-    toast.success(`已载入提示词：${pendingPrompt.title || "未命名提示词"}`);
-  }, [openDraftConversation, setSourceImages]);
-
-  useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("chatgpt-image-studio:mobile-workspace-title", {
         detail: { title: selectedConversation?.title ?? null },
@@ -1689,7 +1797,7 @@ export default function ImagePage() {
             title: "",
             mode: "generate",
             prompt: "",
-            model: PUBLIC_IMAGE_MODEL,
+            model: selectedImageModel,
             count: task.count,
             images: [],
             createdAt: task.createdAt,
@@ -1703,7 +1811,7 @@ export default function ImagePage() {
         );
       });
     }
-  }, [displayedConversations, taskItems, updateConversation]);
+  }, [displayedConversations, selectedImageModel, taskItems, updateConversation]);
 
   const resetComposer = useCallback(
     (nextMode: ImageMode = mode) => {
@@ -1731,9 +1839,11 @@ export default function ImagePage() {
   const handleFocusConversationAndOpenWorkspace = useCallback(
     (conversationId: string) => {
       focusConversation(conversationId);
-      openWorkspaceView();
+      if (!pathname.endsWith("/workspace")) {
+        openWorkspaceView();
+      }
     },
-    [focusConversation, openWorkspaceView],
+    [focusConversation, openWorkspaceView, pathname],
   );
 
   const applyPromptExample = useCallback(
@@ -1839,7 +1949,7 @@ export default function ImagePage() {
     useImageSubmit({
       mode,
       imagePrompt,
-      imageModel: PUBLIC_IMAGE_MODEL,
+      imageModel: selectedImageModel,
       imageSources,
       maskSource,
       sourceImages,
@@ -1849,6 +1959,7 @@ export default function ImagePage() {
       imageQuality,
       imageOutputFormat,
       selectedConversationId,
+      draftSelectionRef,
       editorTarget,
       makeId,
       focusConversation,
@@ -1951,6 +2062,12 @@ export default function ImagePage() {
               inspirationExamples={inspirationExamples}
               onApplyPromptExample={applyPromptExample}
             />
+          ) : !isConversationDetailMounted ? (
+            <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-4 px-4 py-10 sm:px-6">
+              <div className="h-10 w-64 animate-pulse rounded-2xl bg-stone-200/80" />
+              <div className="h-24 w-full animate-pulse rounded-[22px] bg-stone-200/70" />
+              <div className="h-72 w-full animate-pulse rounded-[22px] bg-stone-200/60" />
+            </div>
           ) : (
             <ConversationTurns
               conversationId={selectedConversation.id}
@@ -2017,7 +2134,6 @@ export default function ImagePage() {
         imageQualityDisabledReason={imageQualityDisabledReason}
         imageOutputFormat={imageOutputFormat}
         imageOutputFormatOptions={imageOutputFormatOptions}
-        availableQuota={availableQuota}
         sourceImages={sourceImages}
         imagePrompt={imagePrompt}
         textareaRef={textareaRef}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildDownloadName } from "./conversation-turns";
+import { buildDownloadName } from "./download-name";
 
 describe("buildDownloadName", () => {
   it("uses JPG extension for JPEG MIME results", () => {

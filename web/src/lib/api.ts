@@ -1,4 +1,4 @@
-import { httpRequest } from "@/lib/request";
+﻿import { httpRequest } from "@/lib/request";
 import webConfig from "@/constants/common-env";
 import { getStoredAuthKey } from "@/store/auth";
 import { getStoredApiBaseUrl } from "@/store/api-base-url";
@@ -10,7 +10,7 @@ import {
 } from "@/store/image-account-policy";
 
 export type AccountType = "Free" | "Plus" | "Pro" | "Team";
-export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
+export type AccountStatus = "活跃" | "暂停" | "封禁" | "失效";
 export type SyncStatus =
   | "synced"
   | "pending_upload"
@@ -20,7 +20,7 @@ export type SyncSource = "cpa" | "newapi" | "sub2api";
 export type AccountSourceKind = "auth_file" | "token";
 export const PUBLIC_IMAGE_MODEL = "gpt-image-2" as const;
 export const PUBLIC_4K_IMAGE_MODEL = "gpt-image-2" as const;
-export type ImageModel = typeof PUBLIC_IMAGE_MODEL | typeof PUBLIC_4K_IMAGE_MODEL;
+export type ImageModel = string;
 export type ImageQuality = "low" | "medium" | "high" | "auto";
 export type ImageOutputFormat = "png" | "jpeg" | "webp";
 export type ImageResolutionAccess = "free" | "paid";
@@ -277,7 +277,7 @@ type ImageJobResponse = {
 };
 
 type ModelsResponse = {
-  data?: Array<{ id?: string }>;
+  data?: Array<{ id?: string; display_name?: string }>;
 };
 
 type ImageTaskListResponse = {
@@ -782,7 +782,7 @@ async function requestImageResponseViaStream(
     throw new Error(
       parseErrorMessageFromPayload(
         payload,
-        text || `图片请求失败 (${response.status})`,
+        text || `閸ュ墽澧栫拠閿嬬湴婢惰精瑙?(${response.status})`,
       ),
     );
   }
@@ -1002,7 +1002,9 @@ function extractImageJobError(payload: unknown) {
       return record.message;
     }
   }
-  return typeof body === "string" ? body : "图片任务失败，请稍后重试。";
+  return typeof body === "string"
+    ? body
+    : "上游服务暂时不可用，请稍后重试";
 }
 
 async function resolveImageResponse(
@@ -1014,7 +1016,7 @@ async function resolveImageResponse(
     if (parsed) {
       return parsed;
     }
-    throw new Error("流式返回解析失败，请关闭流式后重试");
+    throw new Error("流式返回格式异常，未解析到最终图片数据");
   }
 
   if (!isImageJobResponse(response)) {
@@ -1042,7 +1044,7 @@ async function resolveImageResponse(
     );
   }
 
-  throw new Error("图片任务等待超时，请稍后重试。");
+  throw new Error("任务轮询超时，请稍后重试");
 }
 
 async function requestImageResponse(
@@ -1054,15 +1056,78 @@ async function requestImageResponse(
     onPartialImage?: (event: ImageStreamPreviewEvent) => void;
   },
 ) {
-  if (isImageStreamModeEnabled()) {
-    const streamed = await requestImageResponseViaStream(path, options);
-    return resolveImageResponse(path, streamed);
+  const hasResponseFormat = (body: Record<string, unknown> | FormData) => {
+    if (body instanceof FormData) {
+      return body.has("response_format");
+    }
+    return (
+      "response_format" in body &&
+      String((body as { response_format?: unknown }).response_format || "").trim()
+        .length > 0
+    );
+  };
+
+  const stripResponseFormat = (
+    body: Record<string, unknown> | FormData,
+  ): Record<string, unknown> | FormData => {
+    if (body instanceof FormData) {
+      const next = new FormData();
+      body.forEach((value, key) => {
+        if (key === "response_format") {
+          return;
+        }
+        next.append(key, value);
+      });
+      return next;
+    }
+    const next = { ...body };
+    delete (next as { response_format?: unknown }).response_format;
+    return next;
+  };
+
+  const isResponseFormatUnsupported = (error: unknown) => {
+    const normalized = String(
+      error instanceof Error ? error.message : error || "",
+    ).toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+    const mentioned =
+      normalized.includes("response_format") ||
+      normalized.includes("response format");
+    if (!mentioned) {
+      return false;
+    }
+    return (
+      normalized.includes("unknown parameter") ||
+      normalized.includes("unsupported") ||
+      normalized.includes("not supported") ||
+      normalized.includes("invalid parameter")
+    );
+  };
+
+  const send = async (body: Record<string, unknown> | FormData) => {
+    const payload = { ...options, body };
+    if (isImageStreamModeEnabled()) {
+      const streamed = await requestImageResponseViaStream(path, payload);
+      return resolveImageResponse(path, streamed);
+    }
+    const response = await httpRequest<ImageResponse | ImageJobResponse | string>(
+      path,
+      payload,
+    );
+    return resolveImageResponse(path, response);
+  };
+
+  try {
+    return await send(options.body);
+  } catch (error) {
+    if (!hasResponseFormat(options.body) || !isResponseFormatUnsupported(error)) {
+      throw error;
+    }
+    const fallbackBody = stripResponseFormat(options.body);
+    return send(fallbackBody);
   }
-  const response = await httpRequest<ImageResponse | ImageJobResponse | string>(
-    path,
-    options,
-  );
-  return resolveImageResponse(path, response);
 }
 
 export async function fetchImageAccountPolicy() {
@@ -1101,7 +1166,7 @@ async function getImageAccountPolicyForRequest() {
 }
 
 function resolveImageResponseFormat(config: ConfigPayload | null) {
-  return config?.storage.imageDataStorage === "server" ? "url" : "b64_json";
+  return config?.storage?.imageDataStorage === "server" ? "url" : "b64_json";
 }
 
 async function getImageResponseFormatForRequest() {
@@ -1157,10 +1222,10 @@ export type Sub2APIGroupsResult = {
   groups: Sub2APIGroupOption[];
 };
 
-export async function login(authKey: string) {
+export async function fetchAvailableModels(authKey: string) {
   const normalizedAuthKey = String(authKey || "").trim();
   if (!normalizedAuthKey) {
-    throw new Error("请输入 NewAPI 密钥");
+    throw new Error("请输入 API 密钥");
   }
   const payload = await httpRequest<ModelsResponse>("/v1/models", {
     headers: {
@@ -1168,13 +1233,25 @@ export async function login(authKey: string) {
     },
     redirectOnUnauthorized: false,
   });
-  const models = Array.isArray(payload.data) ? payload.data : [];
-  if (!models.some((item) => item.id === PUBLIC_IMAGE_MODEL)) {
-    throw new Error("当前密钥不可用或未开通 gpt-image-2");
-  }
-  return { ok: true };
+  const models = Array.isArray(payload.data)
+    ? payload.data
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+    : [];
+  return [...new Set(models)];
 }
 
+export async function login(authKey: string, requiredModel?: string) {
+  const normalizedRequiredModel = String(requiredModel || "").trim();
+  const models = await fetchAvailableModels(authKey);
+  if (normalizedRequiredModel && !models.includes(normalizedRequiredModel)) {
+    throw new Error(`当前密钥不可用或未开通模型：${normalizedRequiredModel}`);
+  }
+  if (!normalizedRequiredModel && !models.some((item) => item === PUBLIC_IMAGE_MODEL)) {
+    throw new Error("当前密钥不可用或未开通 gpt-image-2");
+  }
+  return { ok: true, models };
+}
 export async function fetchAccounts() {
   return httpRequest<AccountListResponse>("/api/accounts");
 }
@@ -1420,6 +1497,7 @@ export async function generateImageWithOptions(
   } = options;
   const normalizedCount = Math.max(1, count);
   const requestSize = size?.trim() || "1024x1024";
+  const responseFormat = await getImageResponseFormatForRequest();
   const body: Record<string, unknown> = {
     prompt,
     model: resolveImageRequestModel(requestSize, model),
@@ -1427,6 +1505,7 @@ export async function generateImageWithOptions(
     size: requestSize,
     quality,
     output_format: outputFormat,
+    response_format: responseFormat,
   };
   if (outputFormat === "jpeg" || outputFormat === "webp") {
     body.output_compression = outputCompression;
@@ -1467,11 +1546,13 @@ export async function editImage({
   outputCompression?: number;
   onPartialImage?: (event: ImageStreamPreviewEvent) => void;
 }) {
+  const responseFormat = await getImageResponseFormatForRequest();
   const formData = new FormData();
   formData.append("prompt", prompt);
   formData.append("model", resolveImageRequestModel(size, model));
   formData.append("n", String(Math.max(1, count)));
   formData.append("output_format", outputFormat);
+  formData.append("response_format", responseFormat);
   if (outputFormat === "jpeg" || outputFormat === "webp") {
     formData.append("output_compression", String(outputCompression));
   }

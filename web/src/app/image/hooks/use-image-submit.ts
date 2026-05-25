@@ -1,12 +1,11 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, type RefObject } from "react";
 import { toast } from "sonner";
 
 import {
   editImage,
   generateImageWithOptions,
-  PUBLIC_IMAGE_MODEL,
   resolveImageRequestModel,
   type ImageStreamPreviewEvent,
   type ImageModel,
@@ -60,6 +59,7 @@ type UseImageSubmitOptions = {
   imageOutputFormat: ImageOutputFormat;
   outputCompression?: number;
   selectedConversationId: string | null;
+  draftSelectionRef: RefObject<boolean>;
   editorTarget: EditorTarget | null;
   makeId: () => string;
   focusConversation: (conversationId: string) => void;
@@ -234,6 +234,7 @@ export function useImageSubmit({
   imageOutputFormat,
   outputCompression = OUTPUT_COMPRESSION,
   selectedConversationId,
+  draftSelectionRef,
   editorTarget,
   makeId,
   focusConversation,
@@ -442,8 +443,11 @@ export function useImageSubmit({
       }
       isSelectionEditDispatchingRef.current = true;
 
+      const shouldCreateNewConversation =
+        draftSelectionRef.current === true || !selectedConversationId;
       const targetConversationId =
-        editorTarget.conversationId ?? selectedConversationId;
+        editorTarget.conversationId ??
+        (shouldCreateNewConversation ? null : selectedConversationId);
       const conversationId = targetConversationId ?? makeId();
       const nextQuality = normalizeImageQuality(overrideQuality, imageQuality);
       const turnId = makeId();
@@ -488,7 +492,9 @@ export function useImageSubmit({
       });
 
       setSubmitElapsedSeconds(0);
-      focusConversation(conversationId);
+      if (!shouldCreateNewConversation) {
+        focusConversation(conversationId);
+      }
       setImagePrompt("");
       setSourceImages([]);
       closeSelectionEditor();
@@ -509,6 +515,7 @@ export function useImageSubmit({
             buildConversationBase(conversationId, draftTurn),
           );
         }
+        focusConversation(conversationId);
 
         onRequestStart({
           conversationId,
@@ -528,7 +535,7 @@ export function useImageSubmit({
           mask: mask.file,
           size: imageSize,
           quality: nextQuality,
-          model: PUBLIC_IMAGE_MODEL,
+          model: imageModel,
           outputFormat: imageOutputFormat,
           outputCompression,
         });
@@ -573,6 +580,7 @@ export function useImageSubmit({
       onRequestStart,
       outputCompression,
       persistConversation,
+      draftSelectionRef,
       selectedConversationId,
       setImagePrompt,
       setSourceImages,
@@ -608,6 +616,7 @@ export function useImageSubmit({
         typeof imageIndex === "number" &&
         imageIndex >= 0 &&
         (turn.count || 1) > 1;
+      const retryImageIndex = typeof imageIndex === "number" ? imageIndex : -1;
       const displayCount = Math.max(1, turn.count || 1);
       const requestCount = isSingleImageRetry ? 1 : displayCount;
       const usesEditEndpoint = turnMode === "edit" || turnImageSources.length > 0;
@@ -638,7 +647,7 @@ export function useImageSubmit({
         title: buildConversationTitle(turnMode, prompt),
         mode: turnMode,
         prompt,
-        model: resolveImageRequestModel(turn.size, PUBLIC_IMAGE_MODEL),
+        model: resolveImageRequestModel(turn.size, turn.model || imageModel),
         count: displayCount,
         size: turn.size,
         resolutionAccess: turn.resolutionAccess,
@@ -698,7 +707,7 @@ export function useImageSubmit({
                 mask: editMask,
                 size: turn.size,
                 quality: turnQuality,
-                model: PUBLIC_IMAGE_MODEL,
+                model: turn.model || imageModel,
                 count: 1,
                 outputFormat: turnOutputFormat,
                 outputCompression,
@@ -707,13 +716,13 @@ export function useImageSubmit({
                     conversationId,
                     turn.id,
                     draftTurn,
-                    imageIndex >= 0 ? imageIndex : requestIndex,
+                    retryImageIndex >= 0 ? retryImageIndex : requestIndex,
                     preview,
                     turnOutputFormat,
                   ),
               })
             : generateImageWithOptions(requestPrompt, {
-                model: PUBLIC_IMAGE_MODEL,
+                model: turn.model || imageModel,
                 count: 1,
                 size: turn.size,
                 quality: turnQuality,
@@ -724,7 +733,7 @@ export function useImageSubmit({
                     conversationId,
                     turn.id,
                     draftTurn,
-                    imageIndex >= 0 ? imageIndex : requestIndex,
+                    retryImageIndex >= 0 ? retryImageIndex : requestIndex,
                     preview,
                     turnOutputFormat,
                   ),
@@ -735,12 +744,12 @@ export function useImageSubmit({
               [
                 mergeSingleResultImage(
                   turn.id,
-                  imageIndex,
-                  (await requestOneImage()).data || [],
+                  retryImageIndex,
+                  (await requestOneImage(retryImageIndex)).data || [],
                   turnOutputFormat,
                 ),
               ],
-              imageIndex,
+              retryImageIndex,
             )
           : await runImageFanOutRequests({
               turnId: turn.id,
@@ -775,7 +784,7 @@ export function useImageSubmit({
                 error: message,
               },
             ],
-            imageIndex,
+            retryImageIndex,
           );
           const status = await finalizeTurn(
             conversationId,
@@ -797,8 +806,8 @@ export function useImageSubmit({
     [
       finalizeTurn,
       focusConversation,
+      imageModel,
       imageOutputFormat,
-      makeId,
       markTurnError,
       onRequestFinish,
       onRequestStart,
@@ -826,7 +835,11 @@ export function useImageSubmit({
     }
     isSubmitDispatchingRef.current = true;
 
-    const conversationId = selectedConversationId ?? makeId();
+    const shouldCreateNewConversation =
+      draftSelectionRef.current === true || !selectedConversationId;
+    const conversationId = shouldCreateNewConversation
+      ? makeId()
+      : selectedConversationId;
     const turnId = makeId();
     const now = new Date().toISOString();
     const streamEnabled = getImageAsyncRelayForceEnabled();
@@ -859,12 +872,14 @@ export function useImageSubmit({
     });
 
     setSubmitElapsedSeconds(0);
-    focusConversation(conversationId);
+    if (!shouldCreateNewConversation) {
+      focusConversation(conversationId);
+    }
     setImagePrompt("");
     setSourceImages([]);
 
     try {
-      if (selectedConversationId) {
+      if (!shouldCreateNewConversation) {
         await updateConversation(conversationId, (current) => ({
           ...(current ?? buildConversationBase(conversationId, draftTurn)),
           turns: [...(current?.turns ?? []), draftTurn],
@@ -874,6 +889,7 @@ export function useImageSubmit({
           buildConversationBase(conversationId, draftTurn),
         );
       }
+      focusConversation(conversationId);
 
       onRequestStart({
         conversationId,
@@ -905,7 +921,7 @@ export function useImageSubmit({
                 mask: editMask,
                 size: imageSize,
                 quality: imageQuality,
-                model: PUBLIC_IMAGE_MODEL,
+                model: imageModel,
                 count: 1,
                 outputFormat: imageOutputFormat,
                 outputCompression,
@@ -920,7 +936,7 @@ export function useImageSubmit({
                   ),
               })
             : generateImageWithOptions(requestPrompt, {
-                model: PUBLIC_IMAGE_MODEL,
+                model: imageModel,
                 count: 1,
                 size: imageSize,
                 quality: imageQuality,
@@ -980,6 +996,7 @@ export function useImageSubmit({
     previewTurnImage,
     replaceTurnImage,
     resetComposer,
+    draftSelectionRef,
     selectedConversationId,
     setImagePrompt,
     setSourceImages,

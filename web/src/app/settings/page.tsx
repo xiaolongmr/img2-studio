@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { CheckCircle2, KeyRound, LoaderCircle } from "lucide-react";
@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { login } from "@/lib/api";
+import { fetchAvailableModels, login } from "@/lib/api";
 import {
   getDefaultApiBaseUrl,
   getStoredApiBaseUrl,
@@ -17,6 +17,12 @@ import {
   getImageAsyncRelayForceEnabled,
   setImageAsyncRelayForceEnabled,
 } from "@/store/image-async-relay";
+import {
+  getStoredImageModel,
+  getStoredImageModels,
+  setStoredImageModel,
+  setStoredImageModels,
+} from "@/store/image-model";
 import {
   getImageStreamPartialImages,
   setImageStreamPartialImages,
@@ -32,6 +38,11 @@ export default function SettingsPage() {
   const [streamPartialImages, setStreamPartialImages] = useState(
     getImageStreamPartialImages(),
   );
+  const [availableModels, setAvailableModels] = useState<string[]>(
+    getStoredImageModels(),
+  );
+  const [selectedModel, setSelectedModel] = useState(getStoredImageModel());
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -46,10 +57,45 @@ export default function SettingsPage() {
     };
   }, []);
 
-  const handleSave = async () => {
+  const handleFetchModels = async () => {
     const normalized = apiKey.trim();
     if (!normalized) {
-      toast.error("请输入 NewAPI key");
+      toast.error("请输入 API 密钥");
+      return;
+    }
+    setIsLoadingModels(true);
+    try {
+      setStoredApiBaseUrl(apiBaseUrl);
+      const models = await fetchAvailableModels(normalized);
+      if (models.length === 0) {
+        toast.error("未获取到可用模型");
+        return;
+      }
+      setAvailableModels(models);
+      setStoredImageModels(models);
+      const nextModel = models.includes(selectedModel)
+        ? selectedModel
+        : models.includes("gpt-image-2")
+          ? "gpt-image-2"
+          : models[0];
+      setSelectedModel(nextModel);
+      toast.success(`已获取 ${models.length} 个模型`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "获取模型失败");
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
+
+  const handleSave = async () => {
+    const normalized = apiKey.trim();
+    const model = String(selectedModel || "").trim();
+    if (!normalized) {
+      toast.error("请输入 API 密钥");
+      return;
+    }
+    if (!model) {
+      toast.error("请选择模型");
       return;
     }
 
@@ -58,9 +104,13 @@ export default function SettingsPage() {
       setStoredApiBaseUrl(apiBaseUrl);
       setImageAsyncRelayForceEnabled(forceAsyncRelay);
       setImageStreamPartialImages(streamPartialImages);
-      await login(normalized);
+      await login(normalized, model);
       await setStoredAuthKey(normalized);
-      toast.success("已验证 gpt-image-2，并保存到本机浏览器");
+      setStoredImageModel(model);
+      if (availableModels.length > 0) {
+        setStoredImageModels(availableModels);
+      }
+      toast.success(`已验证并保存模型：${model}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "验证失败");
     } finally {
@@ -80,7 +130,7 @@ export default function SettingsPage() {
               本地设置
             </h1>
             <p className="mt-2 text-sm leading-7 text-stone-500 dark:text-[var(--studio-text-muted)]">
-              这里保存你的 API URL 和 NewAPI key 到当前浏览器本地，用于调用 gpt-image-2，不会写入服务端。
+              这里保存你的 API URL 与 API 密钥到浏览器本地，并可拉取模型后选择默认生图模型。
             </p>
           </div>
         </div>
@@ -103,19 +153,56 @@ export default function SettingsPage() {
 
         <div className="mt-8 space-y-3">
           <label
-            htmlFor="newapi-key"
+            htmlFor="api-key"
             className="block text-sm font-medium text-stone-700 dark:text-[var(--studio-text)]"
           >
-            NewAPI key
+            API 密钥
           </label>
           <Input
-            id="newapi-key"
+            id="api-key"
             type="password"
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
             placeholder="sk-..."
             className="h-12 rounded-2xl border-stone-200 bg-stone-50 px-4 shadow-none focus-visible:ring-1 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]"
           />
+        </div>
+
+        <div className="mt-8 space-y-3">
+          <label
+            htmlFor="model-select"
+            className="block text-sm font-medium text-stone-700 dark:text-[var(--studio-text)]"
+          >
+            生图模型
+          </label>
+          <div className="flex gap-2">
+            <select
+              id="model-select"
+              value={selectedModel}
+              onChange={(event) => setSelectedModel(event.target.value)}
+              className="h-12 flex-1 rounded-2xl border border-stone-200 bg-stone-50 px-4 text-sm dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]"
+            >
+              {availableModels.length === 0 ? (
+                <option value={selectedModel || ""}>请先获取模型列表</option>
+              ) : (
+                availableModels.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))
+              )}
+            </select>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12 rounded-2xl"
+              onClick={() => void handleFetchModels()}
+              disabled={isLoadingModels}
+            >
+              {isLoadingModels ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              获取模型
+            </Button>
+          </div>
         </div>
 
         <div className="mt-6 rounded-2xl border border-stone-200 bg-stone-50/70 p-4 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]">
@@ -134,7 +221,7 @@ export default function SettingsPage() {
                 强制启用流式/异步中转
               </span>
               <span className="block text-xs leading-6 text-stone-500 dark:text-[var(--studio-text-muted)]">
-                开启后会在图片请求中发送 stream=true（不再附带 X-Rivermoon-Async 头），适合支持流式图片返回的中转站，避免长任务被 2 分钟超时截断。
+                开启后会在图片请求中发送 stream=true，适合支持流式返回的中转站。
               </span>
             </span>
           </label>
@@ -166,7 +253,7 @@ export default function SettingsPage() {
               className="h-10 w-[180px] rounded-xl border-stone-200 bg-white px-3 shadow-none focus-visible:ring-1 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)]"
             />
             <p className="text-xs leading-6 text-stone-500 dark:text-[var(--studio-text-muted)]">
-              0 表示不请求中间图，仅保留流式最终图；数值越大，中间预览越丰富，但会带来少量额外 token 花费。
+              0 表示不请求中间图，仅保留流式最终图。
             </p>
           </div>
         </div>
@@ -174,7 +261,7 @@ export default function SettingsPage() {
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
           <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text)]">
             <CheckCircle2 className="size-4" />
-            验证接口：/v1/models · 模型：gpt-image-2
+            验证接口：/v1/models
           </div>
           <Button
             className="h-10 rounded-full bg-stone-950 px-5 text-white hover:bg-stone-800 dark:bg-[var(--studio-accent-strong)] dark:text-[var(--studio-accent-foreground)]"

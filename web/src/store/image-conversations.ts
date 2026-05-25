@@ -194,7 +194,7 @@ export function getCachedImageConversationsSnapshot():
   ) {
     return null;
   }
-  return sortConversations(cachedConversations.map(normalizeConversation));
+  return [...cachedConversations];
 }
 
 function setCachedConversationsSnapshot(
@@ -638,7 +638,7 @@ export async function listImageConversations(): Promise<ImageConversation[]> {
     return listServerImageConversations();
   }
   const items = await loadConversationCache();
-  return sortConversations(items.map(normalizeConversation));
+  return [...items];
 }
 
 export async function getImageConversation(

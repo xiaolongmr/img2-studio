@@ -19,6 +19,7 @@ type UseImageHistoryOptions = {
   draftSelectionRef: React.RefObject<boolean>;
   activeConversationIds: Set<string>;
   preferredActiveConversationId: string | null;
+  autoSelectFirstConversation?: boolean;
 };
 
 function mergeActiveTaskConversations(
@@ -50,6 +51,7 @@ export function useImageHistory({
   draftSelectionRef,
   activeConversationIds,
   preferredActiveConversationId,
+  autoSelectFirstConversation = true,
 }: UseImageHistoryOptions) {
   const cachedConversations = getCachedImageConversationsSnapshot();
   const conversationsRef = useRef<ImageConversation[]>(
@@ -60,7 +62,11 @@ export function useImageHistory({
   );
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
-  >(cachedConversations?.[0]?.id ?? null);
+  >(
+    autoSelectFirstConversation
+      ? (cachedConversations?.[0]?.id ?? null)
+      : null,
+  );
   const [isLoadingHistory, setIsLoadingHistory] =
     useState(!cachedConversations);
 
@@ -115,8 +121,7 @@ export function useImageHistory({
         if (!mountedRef.current) {
           return;
         }
-        const currentItems =
-          getCachedImageConversationsSnapshot() ?? conversationsRef.current;
+        const currentItems = conversationsRef.current;
         const mergedItems = mergeActiveTaskConversations(
           currentItems,
           nextItems,
@@ -137,6 +142,9 @@ export function useImageHistory({
           ) {
             return preferredActiveConversationId;
           }
+          if (!autoSelectFirstConversation) {
+            return null;
+          }
           return mergedItems[0]?.id ?? null;
         });
       } catch (error) {
@@ -151,7 +159,14 @@ export function useImageHistory({
         }
       }
     },
-    [activeConversationIds, draftSelectionRef, mountedRef, normalizeHistory, preferredActiveConversationId],
+    [
+      activeConversationIds,
+      autoSelectFirstConversation,
+      draftSelectionRef,
+      mountedRef,
+      normalizeHistory,
+      preferredActiveConversationId,
+    ],
   );
 
   const handleCreateDraft = useCallback(
@@ -184,6 +199,9 @@ export function useImageHistory({
             return prev;
           }
           draftSelectionRef.current = false;
+          if (!autoSelectFirstConversation) {
+            return null;
+          }
           return nextConversations[0]?.id ?? null;
         });
         return nextConversations;
@@ -211,11 +229,20 @@ export function useImageHistory({
           if (previousDraftSelection) {
             return null;
           }
+          if (!autoSelectFirstConversation) {
+            return null;
+          }
           return items[0]?.id ?? null;
         });
       }
     },
-    [draftSelectionRef, hasActiveTask, mountedRef, selectedConversationId],
+    [
+      autoSelectFirstConversation,
+      draftSelectionRef,
+      hasActiveTask,
+      mountedRef,
+      selectedConversationId,
+    ],
   );
 
   const handleClearHistory = useCallback(async () => {

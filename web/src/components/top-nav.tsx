@@ -9,6 +9,7 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  ScrollText,
   Settings2,
 } from "lucide-react";
 
@@ -37,7 +38,8 @@ function formatVersionLabel(value: string) {
 const navItems = [
   { href: "/image/history", matchPrefix: "/image", label: "图片工作台", description: "生成与编辑", icon: ImageIcon },
   { href: "/prompt-library", matchPrefix: "/prompt-library", label: "提示词库", description: "选择与上传", icon: BookText },
-  { href: "/settings", matchPrefix: "/settings", label: "本地设置", description: "NewAPI key", icon: Settings2 },
+  { href: "/changelog", matchPrefix: "/changelog", label: "更新记录", description: "版本变更", icon: ScrollText },
+  { href: "/settings", matchPrefix: "/settings", label: "本地设置", description: "API 密钥", icon: Settings2 },
 ] as const;
 
 function BrandCopy({ subtitle }: { subtitle: string }) {
@@ -85,6 +87,7 @@ function DesktopTopNav({ pathname, defaultCollapsed, versionLabel, onLogout }: D
     }
     return defaultCollapsed;
   });
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -172,19 +175,18 @@ function DesktopTopNav({ pathname, defaultCollapsed, versionLabel, onLogout }: D
         </nav>
 
         <div className="mt-auto space-y-3">
-          <a
-            href={repositoryUrl}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
+            onClick={() => setAboutOpen(true)}
             className={cn(
-              "block rounded-2xl bg-white/70 text-xs text-stone-500 shadow-sm transition hover:bg-white hover:text-stone-700 dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text-muted)] dark:hover:bg-[var(--studio-panel-muted)] dark:hover:text-[var(--studio-text)]",
+              "block w-full rounded-2xl bg-white/70 text-left text-xs text-stone-500 shadow-sm transition hover:bg-white hover:text-stone-700 dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text-muted)] dark:hover:bg-[var(--studio-panel-muted)] dark:hover:text-[var(--studio-text)]",
               collapsed ? "px-2 py-3 text-center" : "px-4 py-3",
             )}
-            title="打开 GitHub 仓库"
+            title="关于项目"
           >
             {!collapsed ? <div className="font-medium text-stone-700 dark:text-[var(--studio-text)]">版本</div> : null}
             <div className={cn(!collapsed ? "mt-1" : "font-medium")}>{versionLabel}</div>
-          </a>
+          </button>
           <button
             type="button"
             className={cn(
@@ -198,10 +200,50 @@ function DesktopTopNav({ pathname, defaultCollapsed, versionLabel, onLogout }: D
             {!collapsed ? "退出登录" : null}
           </button>
         </div>
+        {aboutOpen ? (
+          <div
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-4"
+            onClick={() => setAboutOpen(false)}
+          >
+            <div
+              className="w-full max-w-md rounded-3xl border border-stone-200 bg-white p-5 shadow-[0_24px_60px_-24px_rgba(15,23,42,0.45)] dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="text-base font-semibold text-stone-900 dark:text-[var(--studio-text-strong)]">
+                关于项目
+              </div>
+              <div className="mt-4 space-y-2 text-sm leading-6 text-stone-600 dark:text-[var(--studio-text)]">
+                <div>原项目作者：peiyizhi0724</div>
+                <div>
+                  原项目链接：
+                  <a
+                    href={repositoryUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="ml-1 text-stone-900 underline underline-offset-2 dark:text-[var(--studio-text-strong)]"
+                  >
+                    {repositoryUrl}
+                  </a>
+                </div>
+                <div>二开作者：codex with 爱吃馍</div>
+              </div>
+              <div className="mt-5 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setAboutOpen(false)}
+                  className="rounded-full border border-stone-200 bg-white px-4 py-2 text-sm font-medium text-stone-700 transition hover:bg-stone-50 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text)] dark:hover:bg-[var(--studio-panel-muted)]"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </aside>
   );
 }
+
 
 const FALLBACK_VERSION_LABEL = "parallel";
 

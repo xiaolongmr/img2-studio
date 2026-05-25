@@ -24,6 +24,7 @@ type PendingPromptPayload = {
   title?: string;
   prompt: string;
   mode?: "generate" | "edit";
+  model?: string;
 };
 
 const PROMPT_LIBRARY_KEY = "studio.prompt-library.items.v1";
@@ -162,6 +163,7 @@ export function consumePendingPromptForWorkspace(): PendingPromptPayload | null 
     title: String(parsed.title || "").trim() || undefined,
     prompt: String(parsed.prompt || "").trim(),
     mode: String(parsed.mode || "").trim() === "edit" ? "edit" : "generate",
+    model: String(parsed.model || "").trim() || undefined,
   };
 }
 

@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { memo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import Zoom from "react-medium-image-zoom";
 import {
   Brush,
@@ -30,6 +30,7 @@ import {
   buildImageDataUrl,
   buildSourceImageUrl,
 } from "../view-utils";
+import { buildDownloadName } from "./download-name";
 
 type ActiveRequestState = {
   conversationId: string;
@@ -92,62 +93,6 @@ function formatLiveDurationFromSeconds(totalSeconds: number) {
   return minutes > 0
     ? `${minutes}m ${String(seconds).padStart(2, "0")}s`
     : `${seconds}s`;
-}
-
-function mimeTypeToExtension(mimeType: string | undefined) {
-  const normalized = String(mimeType || "").trim().toLowerCase();
-  if (normalized === "image/jpeg" || normalized === "image/jpg") {
-    return "jpg";
-  }
-  if (normalized === "image/png") {
-    return "png";
-  }
-  if (normalized === "image/webp") {
-    return "webp";
-  }
-  return "";
-}
-
-function outputFormatToExtension(outputFormat: ImageOutputFormat | undefined) {
-  if (outputFormat === "jpeg") {
-    return "jpg";
-  }
-  if (outputFormat === "png" || outputFormat === "webp") {
-    return outputFormat;
-  }
-  return "";
-}
-
-function extractDataUrlMimeType(raw: string | undefined) {
-  const match = String(raw || "").match(/^data:([^;,]+)[;,]/i);
-  return match?.[1] || "";
-}
-
-export function buildDownloadName(
-  createdAt: string,
-  turnId: string,
-  index: number,
-  image?: Pick<StoredImage, "mime_type" | "url">,
-  outputFormat?: ImageOutputFormat,
-) {
-  const extension =
-    mimeTypeToExtension(image?.mime_type) ||
-    mimeTypeToExtension(extractDataUrlMimeType(image?.url)) ||
-    outputFormatToExtension(outputFormat) ||
-    "jpg";
-  const date = new Date(createdAt);
-  const safeIndex = String(index + 1).padStart(2, "0");
-  if (Number.isNaN(date.getTime())) {
-    return `chatgpt-image-${turnId.slice(0, 8)}-${safeIndex}.${extension}`;
-  }
-
-  const yyyy = String(date.getFullYear());
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const dd = String(date.getDate()).padStart(2, "0");
-  const hh = String(date.getHours()).padStart(2, "0");
-  const min = String(date.getMinutes()).padStart(2, "0");
-  const sec = String(date.getSeconds()).padStart(2, "0");
-  return `chatgpt-image-${yyyy}${mm}${dd}-${hh}${min}${sec}-${safeIndex}.${extension}`;
 }
 
 async function copyPromptToClipboard(prompt: string) {
@@ -223,6 +168,9 @@ type ConversationTurnsProps = {
   ) => Promise<void>;
 };
 
+const INITIAL_VISIBLE_TURNS = 2;
+const VISIBLE_TURN_STEP = 4;
+
 export const ConversationTurns = memo(function ConversationTurns({
   conversationId,
   turns,
@@ -240,9 +188,38 @@ export const ConversationTurns = memo(function ConversationTurns({
   onRetryTurn,
   onCancelTurn,
 }: ConversationTurnsProps) {
+  const [visibleTurnCount, setVisibleTurnCount] = useState(() =>
+    Math.min(turns.length, INITIAL_VISIBLE_TURNS),
+  );
+
+  useEffect(() => {
+    setVisibleTurnCount(Math.min(turns.length, INITIAL_VISIBLE_TURNS));
+  }, [conversationId, turns.length]);
+
+  const hiddenTurnCount = Math.max(0, turns.length - visibleTurnCount);
+  const visibleTurns = useMemo(
+    () => turns.slice(hiddenTurnCount),
+    [hiddenTurnCount, turns],
+  );
+
   return (
     <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-0 pb-8 sm:px-6 sm:py-8">
-      {turns.map((turn) => {
+      {hiddenTurnCount > 0 ? (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={() =>
+              setVisibleTurnCount((current) =>
+                Math.min(turns.length, current + VISIBLE_TURN_STEP),
+              )
+            }
+            className="rounded-full border border-stone-200 bg-white px-4 py-2 text-xs font-medium text-stone-600 transition hover:bg-stone-50 hover:text-stone-900"
+          >
+            加载更早记录（剩余 {hiddenTurnCount} 条）
+          </button>
+        </div>
+      ) : null}
+      {visibleTurns.map((turn) => {
         const liveElapsedSeconds =
           activeRequestElapsedSecondsByTurnId[turn.id] ?? 0;
         const turnProcessing = activeRequests.some(
@@ -293,7 +270,14 @@ export const ConversationTurns = memo(function ConversationTurns({
               : "准备中";
 
         return (
-          <div key={turn.id} className="space-y-4">
+          <div
+            key={turn.id}
+            style={{
+              contentVisibility: "auto",
+              containIntrinsicSize: "800px 960px",
+            }}
+            className="space-y-4"
+          >
             <div className="flex justify-end">
               <div className="flex w-full max-w-[78%] flex-col items-end gap-4">
                 {turn.sourceImages && turn.sourceImages.length > 0 ? (
@@ -313,6 +297,8 @@ export const ConversationTurns = memo(function ConversationTurns({
                             width={220}
                             height={160}
                             unoptimized
+                            loading="lazy"
+                            decoding="async"
                             className="block h-24 w-full cursor-zoom-in bg-stone-50 object-contain"
                           />
                         </Zoom>
@@ -488,16 +474,31 @@ export const ConversationTurns = memo(function ConversationTurns({
                         {image.status === "success" && imageDataUrl ? (
                           <div>
                             <div className="relative">
-                              <Zoom>
+                              {image.streamPreview ? (
                                 <Image
                                   src={imageDataUrl}
                                   alt={`Generated result ${index + 1}`}
                                   width={1024}
                                   height={1024}
                                   unoptimized
-                                  className="block h-auto max-h-[270px] w-auto max-w-full cursor-zoom-in"
+                                  loading="lazy"
+                                  decoding="async"
+                                  className="block h-auto max-h-[270px] w-auto max-w-full cursor-default"
                                 />
-                              </Zoom>
+                              ) : (
+                                <Zoom>
+                                  <Image
+                                    src={imageDataUrl}
+                                    alt={`Generated result ${index + 1}`}
+                                    width={1024}
+                                    height={1024}
+                                    unoptimized
+                                    loading="lazy"
+                                    decoding="async"
+                                    className="block h-auto max-h-[270px] w-auto max-w-full cursor-zoom-in"
+                                  />
+                                </Zoom>
+                              )}
                               <span
                                 className={cn(
                                   "pointer-events-none absolute top-3 right-3 inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium shadow-sm",

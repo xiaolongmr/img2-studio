@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
   type CSSProperties,
   type ReactNode,
   type RefObject,
@@ -47,7 +48,6 @@ type PromptComposerProps = {
   imageQualityDisabledReason: string;
   imageOutputFormat: ImageOutputFormat;
   imageOutputFormatOptions: Array<{ label: string; value: ImageOutputFormat; description: string }>;
-  availableQuota: string;
   sourceImages: StoredSourceImage[];
   imagePrompt: string;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -88,7 +88,6 @@ export function PromptComposer({
   imageQualityDisabledReason,
   imageOutputFormat,
   imageOutputFormatOptions,
-  availableQuota,
   sourceImages,
   imagePrompt,
   textareaRef,
@@ -128,6 +127,8 @@ export function PromptComposer({
   const [isMobileComposerExpanded, setIsMobileComposerExpanded] = useState(hasComposerContent);
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
   const [mentionPickerIndex, setMentionPickerIndex] = useState(0);
+  const [isDraggingReferenceImage, setIsDraggingReferenceImage] = useState(false);
+  const dragLayerDepthRef = useRef(0);
   const isMobileComposerCollapsed = !isMobileComposerExpanded;
   const showMobileExpandedSections = !isMobileComposerCollapsed;
   const imageReferenceSources = sourceImages.filter((item) => item.role === "image");
@@ -175,7 +176,14 @@ export function PromptComposer({
       </span>
     ) : null;
 
-  function insertImageMention(source: StoredSourceImage, index: number) {
+  function insertImageMention(
+    source: StoredSourceImage,
+    index: number,
+    options?: {
+      replaceMentionTrigger?: boolean;
+    },
+  ) {
+    const replaceMentionTrigger = Boolean(options?.replaceMentionTrigger);
     const textarea = textareaRef.current;
     const fallbackSelection = promptSelectionRef.current;
     const mention = normalizeSourceImageMention(source.referenceAlias) ||
@@ -187,13 +195,18 @@ export function PromptComposer({
       fallbackSelection.end ?? textarea?.selectionEnd ?? selectionStart;
     const beforeSelection = currentValue.slice(0, selectionStart);
     const afterSelection = currentValue.slice(selectionEnd);
-    const atIndex = beforeSelection.lastIndexOf("@");
-    const replaceStart = atIndex >= 0 ? atIndex : selectionStart;
+    const mentionTriggerIndex = beforeSelection.lastIndexOf("@");
+    const replaceStart = replaceMentionTrigger
+      ? mentionTriggerIndex >= 0
+        ? mentionTriggerIndex
+        : selectionStart
+      : selectionStart;
     const prefix = currentValue.slice(0, replaceStart);
     const needsLeadingSpace = prefix.length > 0 && !/\s$/.test(prefix);
     const needsTrailingSpace = afterSelection.length > 0 && !/^\s/.test(afterSelection);
-    const nextValue = `${prefix}${needsLeadingSpace ? " " : ""}${mention}${needsTrailingSpace ? " " : ""}${afterSelection}`;
-    const nextCursor = `${prefix}${needsLeadingSpace ? " " : ""}${mention} `.length;
+    const insertedMention = `${needsLeadingSpace ? " " : ""}${mention}${needsTrailingSpace ? " " : ""}`;
+    const nextValue = `${prefix}${insertedMention}${afterSelection}`;
+    const nextCursor = `${prefix}${insertedMention}`.length;
 
     promptValueRef.current = nextValue;
     promptSelectionRef.current = {
@@ -230,6 +243,7 @@ export function PromptComposer({
         insertImageMention(
           imageReferenceSources[mentionPickerIndex],
           sourceImages.findIndex((item) => item.id === imageReferenceSources[mentionPickerIndex].id),
+          { replaceMentionTrigger: true },
         );
         return;
       }
@@ -282,6 +296,73 @@ export function PromptComposer({
       height: `${desktopPromptHeight}px`,
     };
   }, [desktopPromptHeight]);
+
+  function hasImageFiles(files: FileList | null) {
+    if (!files || files.length === 0) {
+      return false;
+    }
+    return Array.from(files).some((file) =>
+      String(file.type || "")
+        .toLowerCase()
+        .startsWith("image/"),
+    );
+  }
+
+  function hasDragFilePayload(dataTransfer: DataTransfer | null | undefined) {
+    if (!dataTransfer) {
+      return false;
+    }
+    const types = Array.from(dataTransfer.types || []);
+    if (types.includes("Files")) {
+      return true;
+    }
+    return hasImageFiles(dataTransfer.files || null);
+  }
+
+  function handleComposerDragEnter(event: ReactDragEvent<HTMLDivElement>) {
+    if (!hasDragFilePayload(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    dragLayerDepthRef.current += 1;
+    setIsDraggingReferenceImage(true);
+    setIsMobileComposerExpanded(true);
+  }
+
+  function handleComposerDragOver(event: ReactDragEvent<HTMLDivElement>) {
+    if (!hasDragFilePayload(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleComposerDragLeave(event: ReactDragEvent<HTMLDivElement>) {
+    if (dragLayerDepthRef.current <= 0) {
+      setIsDraggingReferenceImage(false);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    dragLayerDepthRef.current = Math.max(0, dragLayerDepthRef.current - 1);
+    if (dragLayerDepthRef.current === 0) {
+      setIsDraggingReferenceImage(false);
+    }
+  }
+
+  function handleComposerDrop(event: ReactDragEvent<HTMLDivElement>) {
+    const files = event.dataTransfer?.files ?? null;
+    if (!hasImageFiles(files)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    dragLayerDepthRef.current = 0;
+    setIsDraggingReferenceImage(false);
+    void onAppendFiles(files, "image");
+  }
 
   return (
     <div
@@ -450,18 +531,25 @@ export function PromptComposer({
               </div>
             ) : null}
 
-            <span className="shrink-0 rounded-full bg-stone-100 px-2.5 py-1.5 text-[11px] font-medium text-stone-600 sm:px-3 sm:py-2 sm:text-xs">
-              费用归属 {availableQuota}
-            </span>
           </div>
         </div>
 
           <div
-          className="overflow-hidden rounded-[24px] border border-stone-200 bg-[#fafaf9] shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-colors duration-200 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:rounded-[28px]"
+          className={cn(
+            mentionPickerOpen ? "overflow-visible" : "overflow-hidden",
+            "rounded-[24px] border border-stone-200 bg-[#fafaf9] shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-colors duration-200 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:rounded-[28px]",
+            isDraggingReferenceImage
+              ? "border-sky-400 bg-sky-50/70 dark:border-sky-500/80 dark:bg-sky-900/15"
+              : "",
+          )}
           onClick={() => {
             setIsMobileComposerExpanded(true);
             textareaRef.current?.focus();
           }}
+          onDragEnter={handleComposerDragEnter}
+          onDragOver={handleComposerDragOver}
+          onDragLeave={handleComposerDragLeave}
+          onDrop={handleComposerDrop}
         >
           {sourceImages.length > 0 ? (
             <div
@@ -487,8 +575,12 @@ export function PromptComposer({
                     <button
                       type="button"
                       className="min-w-0 truncate rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-semibold text-stone-700 transition hover:bg-stone-200"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                      }}
                       onClick={(event) => {
                         event.stopPropagation();
+                        syncPromptSelection();
                         if (item.role === "image") {
                           insertImageMention(item, sourceIndex >= 0 ? sourceIndex : 0);
                         }
@@ -593,6 +685,7 @@ export function PromptComposer({
                   style={desktopPromptStyle}
                   className="hidden resize-none border-0 bg-transparent !px-1 !pb-1 text-[14px] text-stone-900 shadow-none placeholder:text-stone-400 focus-visible:ring-0 sm:block sm:min-h-[38px] sm:max-h-[260px] sm:overflow-y-auto sm:!pt-1 sm:pr-10 sm:text-[15px] sm:leading-7"
                   onFocus={() => setIsMobileComposerExpanded(true)}
+                  onBlur={syncPromptSelection}
                 />
               </>
             ) : (
@@ -616,10 +709,11 @@ export function PromptComposer({
                 style={desktopPromptStyle}
                 className="resize-none border-0 bg-transparent !px-1 !pb-1 text-[14px] text-stone-900 shadow-none placeholder:text-stone-400 focus-visible:ring-0 min-h-[30px] max-h-[70px] overflow-y-auto !pt-1 pr-10 leading-6 sm:min-h-[38px] sm:max-h-[260px] sm:text-[15px] sm:leading-7"
                 onFocus={() => setIsMobileComposerExpanded(true)}
+                onBlur={syncPromptSelection}
               />
             )}
             {mentionPickerOpen && imageReferenceSources.length > 0 ? (
-              <div className="absolute left-4 top-full z-[70] mt-2 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_18px_60px_-24px_rgba(15,23,42,0.45)] dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)]">
+              <div className="absolute left-4 top-full z-[120] mt-2 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_18px_60px_-24px_rgba(15,23,42,0.45)] dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)]">
                 <div className="flex items-center gap-2 border-b border-stone-100 px-3 py-2 text-xs font-semibold text-stone-500">
                   <Tags className="size-3.5" />
                   选择要引用的图片
@@ -642,7 +736,11 @@ export function PromptComposer({
                         onMouseEnter={() => setMentionPickerIndex(pickerIndex)}
                         onClick={(event) => {
                           event.stopPropagation();
-                          insertImageMention(source, sourceIndex >= 0 ? sourceIndex : pickerIndex);
+                          insertImageMention(
+                            source,
+                            sourceIndex >= 0 ? sourceIndex : pickerIndex,
+                            { replaceMentionTrigger: true },
+                          );
                         }}
                       >
                         <Image

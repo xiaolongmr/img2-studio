@@ -305,9 +305,11 @@ const HistoryConversationCard = memo(
             <button
               type="button"
               onClick={() => void onDeleteConversation(id)}
-              disabled={disabled}
               title={disabled ? "当前会话仍在处理中，暂时不能删除" : "删除会话"}
-              className="inline-flex size-8 shrink-0 items-center justify-center rounded-xl text-stone-400 opacity-100 transition hover:bg-stone-100 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-stone-400 lg:opacity-0 lg:group-hover:opacity-100 lg:disabled:opacity-40"
+              className={cn(
+                "inline-flex size-8 shrink-0 items-center justify-center rounded-xl text-stone-400 opacity-100 transition hover:bg-stone-100 hover:text-rose-500 lg:opacity-0 lg:group-hover:opacity-100",
+                disabled ? "opacity-40 hover:text-stone-400" : "",
+              )}
               aria-label="删除会话"
             >
               <Trash2 className="size-4" />
@@ -520,7 +522,7 @@ export const HistorySidebar = memo(
                   variant="outline"
                   className="h-10 w-10 rounded-xl border-stone-200 bg-white px-0 text-stone-600 hover:bg-stone-50 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text)] dark:hover:bg-[var(--studio-panel-muted)]"
                   onClick={() => void onClearHistory()}
-                  disabled={conversations.length === 0 || hasActiveTasks}
+                  disabled={conversations.length === 0}
                   title={
                     hasActiveTasks ? "有任务运行中时不能清空历史" : "清空历史记录"
                   }
@@ -554,7 +556,7 @@ export const HistorySidebar = memo(
                   variant="outline"
                   className="h-11 rounded-2xl border-stone-200 bg-white px-3 text-stone-600 hover:bg-stone-50 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text)] dark:hover:bg-[var(--studio-panel-muted)]"
                   onClick={() => void onClearHistory()}
-                  disabled={conversations.length === 0 || hasActiveTasks}
+                  disabled={conversations.length === 0}
                   title={
                     hasActiveTasks ? "有任务运行中时不能清空历史" : "清空历史记录"
                   }

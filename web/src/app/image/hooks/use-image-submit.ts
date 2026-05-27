@@ -111,6 +111,7 @@ function buildSourceReference(payload: {
   role: "image" | "mask";
   name: string;
   url: string;
+  isPrimary?: boolean;
   referenceLabel?: string;
   referenceAlias?: string;
 }): StoredSourceImage {
@@ -119,6 +120,7 @@ function buildSourceReference(payload: {
       id: payload.id,
       role: payload.role,
       name: payload.name,
+      isPrimary: payload.isPrimary,
       referenceLabel: payload.referenceLabel,
       referenceAlias: payload.referenceAlias,
       dataUrl: payload.url,
@@ -128,6 +130,7 @@ function buildSourceReference(payload: {
     id: payload.id,
     role: payload.role,
     name: payload.name,
+    isPrimary: payload.isPrimary,
     referenceLabel: payload.referenceLabel,
     referenceAlias: payload.referenceAlias,
     url: payload.url,
@@ -460,6 +463,7 @@ export function useImageSubmit({
         id: makeId(),
         role: "image",
         name: editorTarget.imageName,
+        isPrimary: true,
         referenceLabel: "@图1",
         url: editorTarget.sourceDataUrl,
       });
@@ -607,6 +611,7 @@ export function useImageSubmit({
       const turnImageSources = turnSourceImages.filter(
         (item) => item.role === "image" && buildSourceImageUrl(item),
       );
+      const prioritizedTurnImageSources = turnImageSources;
       const turnMaskSource =
         turnSourceImages.find((item) => item.role === "mask") ?? null;
       const turnQuality = turn.quality || "low";
@@ -693,12 +698,12 @@ export function useImageSubmit({
         });
 
         const editFiles = usesEditEndpoint
-          ? await sourceImagesToFiles(turnImageSources)
+          ? await sourceImagesToFiles(prioritizedTurnImageSources)
           : [];
         const editMask = usesEditEndpoint
           ? await sourceMaskToFile(turnMaskSource)
           : null;
-      const requestPrompt = buildReferencedImagePrompt(prompt, turnImageSources);
+      const requestPrompt = buildReferencedImagePrompt(prompt, prioritizedTurnImageSources);
       const requestOneImage = (requestIndex: number) =>
           usesEditEndpoint
             ? editImage({
@@ -847,7 +852,8 @@ export function useImageSubmit({
       ? normalizeStreamPartialImagesCount(getImageStreamPartialImages())
       : 0;
     const expectedCount = mode === "generate" ? parsedCount : 1;
-    const requestPrompt = buildReferencedImagePrompt(prompt, imageSources);
+    const prioritizedImageSources = imageSources;
+    const requestPrompt = buildReferencedImagePrompt(prompt, prioritizedImageSources);
     const draftTurn = createConversationTurn({
       turnId,
       title: buildConversationTitle(mode, prompt),
@@ -859,7 +865,7 @@ export function useImageSubmit({
       resolutionAccess: imageResolutionAccess,
       quality: imageQuality,
       outputFormat: imageOutputFormat,
-      sourceImages,
+      sourceImages: prioritizedImageSources,
       images: createLoadingImages(expectedCount, turnId),
       createdAt: now,
       startedAt: now,
@@ -901,7 +907,7 @@ export function useImageSubmit({
       isSubmitDispatchingRef.current = false;
 
       const editFiles = usesEditEndpoint
-        ? await sourceImagesToFiles(imageSources)
+        ? await sourceImagesToFiles(prioritizedImageSources)
         : [];
       const editMask = usesEditEndpoint
         ? await sourceMaskToFile(maskSource)
@@ -1001,7 +1007,6 @@ export function useImageSubmit({
     setImagePrompt,
     setSourceImages,
     setSubmitElapsedSeconds,
-    sourceImages,
     updateConversation,
   ]);
 

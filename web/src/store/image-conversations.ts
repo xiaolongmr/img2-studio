@@ -20,6 +20,7 @@ export type StoredSourceImage = {
   id: string;
   role: "image" | "mask";
   name: string;
+  isPrimary?: boolean;
   referenceLabel?: string;
   referenceAlias?: string;
   dataUrl?: string;
@@ -380,6 +381,13 @@ function normalizeImageMode(value: unknown): ImageMode {
 }
 
 function normalizeTurn(turn: ImageConversationTurn): ImageConversationTurn {
+  const sourceImages = Array.isArray(turn.sourceImages) ? turn.sourceImages : [];
+  const imageSources = sourceImages.filter((item) => item.role === "image");
+  const hasPrimaryImage = imageSources.some((item) => item.isPrimary);
+  const fallbackPrimaryId = !hasPrimaryImage && imageSources.length > 0
+    ? imageSources[0].id
+    : null;
+
   return {
     ...turn,
     model: normalizeImageModel(turn.model),
@@ -387,7 +395,14 @@ function normalizeTurn(turn: ImageConversationTurn): ImageConversationTurn {
     resolutionAccess: normalizeResolutionAccess(turn.resolutionAccess),
     quality: normalizeImageQuality(turn.quality),
     outputFormat: normalizeImageOutputFormat(turn.outputFormat),
-    sourceImages: Array.isArray(turn.sourceImages) ? turn.sourceImages : [],
+    sourceImages: sourceImages.map((item) =>
+      fallbackPrimaryId && item.role === "image"
+        ? {
+            ...item,
+            isPrimary: item.id === fallbackPrimaryId,
+          }
+        : item,
+    ),
     sourceReference: normalizeSourceReference(turn.sourceReference),
     streamEnabled:
       typeof turn.streamEnabled === "boolean" ? turn.streamEnabled : undefined,

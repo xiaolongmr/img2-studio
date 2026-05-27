@@ -15,8 +15,30 @@ import type {
   StoredSourceImage,
 } from "@/store/image-conversations";
 
+export const SELECTED_MENTION_MARKER_START = "\u2063";
+export const SELECTED_MENTION_MARKER_END = "\u2064";
+
+export function wrapSelectedMentionToken(text: string) {
+  return `${SELECTED_MENTION_MARKER_START}${text}${SELECTED_MENTION_MARKER_END}`;
+}
+
+export function stripSelectedMentionMarkers(value: string) {
+  return String(value || "").replace(
+    /[\u2063\u2064]/g,
+    "",
+  );
+}
+
+export function hasSelectedMentionToken(value: string) {
+  const content = String(value || "");
+  return (
+    content.includes(SELECTED_MENTION_MARKER_START) &&
+    content.includes(SELECTED_MENTION_MARKER_END)
+  );
+}
+
 export function buildConversationTitle(mode: ImageMode, prompt: string, scale = "") {
-  const trimmed = prompt.trim();
+  const trimmed = stripSelectedMentionMarkers(prompt).trim();
   const prefix = mode === "generate" ? "生成" : "编辑";
   if (!trimmed) {
     return scale ? `${prefix} · ${scale}` : prefix;
@@ -278,7 +300,7 @@ export function buildReferencedImagePrompt(
   prompt: string,
   sourceImages: StoredSourceImage[] = [],
 ) {
-  const trimmedPrompt = prompt.trim();
+  const trimmedPrompt = stripSelectedMentionMarkers(prompt).trim();
   const imageSources = sourceImages.filter((item) => item.role === "image");
   if (imageSources.length === 0) {
     return trimmedPrompt;

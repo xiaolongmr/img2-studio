@@ -66,12 +66,16 @@ function appendSourceImagesWithStableLabels(
   current: StoredSourceImage[],
   nextItems: StoredSourceImage[],
 ) {
-  const labelledItems = withStableSourceImageLabels(current, nextItems);
+  const existingImages = current.filter((item) => item.role === "image");
+  const incomingImages = nextItems.filter((item) => item.role === "image");
+  const incomingMasks = nextItems.filter((item) => item.role === "mask");
+  const labelledImages = withStableSourceImageLabels(existingImages, incomingImages);
+  const nextImages = [...existingImages, ...labelledImages];
 
   return [
-    ...current.filter((item) => item.role !== "mask"),
+    ...nextImages,
     ...current.filter((item) => item.role === "mask"),
-    ...labelledItems,
+    ...incomingMasks,
   ];
 }
 

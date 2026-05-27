@@ -32,6 +32,7 @@ import {
   type ImageConversationTurn,
   type ImageMode,
   type StoredImage,
+  type StoredSourceImage,
 } from "@/store/image-conversations";
 import { consumePendingPromptForWorkspace } from "@/store/prompt-library";
 import { getStoredImageModel, setStoredImageModel } from "@/store/image-model";
@@ -57,8 +58,10 @@ type ImageAspectRatio =
   | "3:2"
   | "16:9"
   | "21:9"
+  | "3:4"
   | "2:3"
   | "9:16"
+  | "9:21"
   | "custom";
 type ImageResolutionTier = string;
 type ImageResolutionAccess = "free" | "paid";
@@ -68,6 +71,7 @@ type ImageResolutionPreset = {
   value: string;
   access: ImageResolutionAccess;
 };
+type StandardAspectRatio = Exclude<ImageAspectRatio, "auto" | "custom">;
 type RunningActiveRequestState = ActiveRequestState & {
   startedAt: number;
 };
@@ -77,13 +81,15 @@ const imageAspectRatioOptionsBase: Array<{
   value: ImageAspectRatio;
 }> = [
   { label: "Auto", value: "auto" },
-  { label: "1:1", value: "1:1" },
-  { label: "4:3", value: "4:3" },
-  { label: "3:2", value: "3:2" },
-  { label: "16:9", value: "16:9" },
   { label: "21:9", value: "21:9" },
+  { label: "16:9", value: "16:9" },
+  { label: "3:2", value: "3:2" },
+  { label: "4:3", value: "4:3" },
+  { label: "1:1", value: "1:1" },
+  { label: "3:4", value: "3:4" },
   { label: "2:3", value: "2:3" },
   { label: "9:16", value: "9:16" },
+  { label: "9:21", value: "9:21" },
   { label: "自定义", value: "custom" },
 ];
 
@@ -98,34 +104,30 @@ const HISTORY_SIDEBAR_COMPACT_BREAKPOINT = 160;
 const DESKTOP_PROMPT_MIN_HEIGHT = 70;
 const DESKTOP_PROMPT_MAX_HEIGHT = 420;
 
-const imageResolutionPresets: Record<
-  Exclude<ImageAspectRatio, "auto" | "custom">,
-  ImageResolutionPreset[]
-> = {
-  "1:1": [
-    { tier: "standard", label: "1024 x 1024", value: "1024x1024", access: "free" },
-    { tier: "two-k", label: "2048 x 2048 · 2K", value: "2048x2048", access: "free" },
-  ],
-  "4:3": [
-    { tier: "standard", label: "1536 x 1024", value: "1536x1024", access: "free" },
-  ],
-  "3:2": [
-    { tier: "standard", label: "1536 x 1024", value: "1536x1024", access: "free" },
-  ],
-  "16:9": [
-    { tier: "two-k", label: "2048 x 1152 · 2K", value: "2048x1152", access: "free" },
-    { tier: "four-k", label: "3840 x 2160 · 4K", value: "3840x2160", access: "free" },
-  ],
-  "21:9": [
-    { tier: "standard", label: "1536 x 1024", value: "1536x1024", access: "free" },
-  ],
-  "2:3": [
-    { tier: "standard", label: "1024 x 1536", value: "1024x1536", access: "free" },
-  ],
-  "9:16": [
-    { tier: "four-k", label: "2160 x 3840 · 4K", value: "2160x3840", access: "free" },
-  ],
-};
+const STANDARD_RATIO_OPTIONS: Array<{
+  value: StandardAspectRatio;
+  widthRatio: number;
+  heightRatio: number;
+}> = [
+  { value: "21:9", widthRatio: 21, heightRatio: 9 },
+  { value: "16:9", widthRatio: 16, heightRatio: 9 },
+  { value: "3:2", widthRatio: 3, heightRatio: 2 },
+  { value: "4:3", widthRatio: 4, heightRatio: 3 },
+  { value: "1:1", widthRatio: 1, heightRatio: 1 },
+  { value: "3:4", widthRatio: 3, heightRatio: 4 },
+  { value: "2:3", widthRatio: 2, heightRatio: 3 },
+  { value: "9:16", widthRatio: 9, heightRatio: 16 },
+  { value: "9:21", widthRatio: 9, heightRatio: 21 },
+];
+
+const RESOLUTION_TARGETS: Array<{
+  tier: ImageResolutionTier;
+  targetPixels: number;
+}> = [
+  { tier: "custom-1k", targetPixels: 1024 * 1024 },
+  { tier: "custom-2k", targetPixels: 2048 * 2048 },
+  { tier: "custom-4k", targetPixels: 3840 * 2160 },
+];
 
 function parseAspectRatioPair(value: string): [number, number] | null {
   const match = String(value || "")
@@ -148,32 +150,181 @@ function parseAspectRatioPair(value: string): [number, number] | null {
 }
 
 function normalizeCustomAspectRatioInput(value: string) {
-  return String(value || "")
+  const normalized = String(value || "")
     .replace(/[：]/g, ":")
     .replace(/[／]/g, "/")
     .replace(/[×✕]/g, "x")
-    .replace(/\s+/g, "")
-    .trim();
+    .replace(/\s+/g, " ");
+
+  const spaceSeparatedPair = normalized.trim().match(/^(\d+)\s+(\d+)$/);
+  if (spaceSeparatedPair) {
+    return `${spaceSeparatedPair[1]}:${spaceSeparatedPair[2]}`;
+  }
+
+  const typingSpacePair = normalized.match(/^(\d+)\s+$/);
+  if (typingSpacePair) {
+    return `${typingSpacePair[1]} `;
+  }
+
+  return normalized.trim().replace(/\s+/g, "");
 }
+
+function mapStoredTurnSourceImages(sources: StoredSourceImage[]) {
+  return sources.map((source) => ({
+    ...source,
+    id: makeId(),
+    dataUrl: source.dataUrl,
+    url: source.dataUrl ? undefined : source.url,
+  }));
+}
+
+function resolveAspectRatioFromSize(size?: string): ImageAspectRatio {
+  const normalized = String(size || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/x/g, ":");
+  if (!normalized) {
+    return "1:1";
+  }
+  const predefined: ImageAspectRatio[] = [
+    "21:9",
+    "16:9",
+    "3:2",
+    "4:3",
+    "1:1",
+    "3:4",
+    "2:3",
+    "9:16",
+    "9:21",
+  ];
+  if (predefined.includes(normalized as ImageAspectRatio)) {
+    return normalized as ImageAspectRatio;
+  }
+  return "custom";
+}
+
+const CUSTOM_SIZE_MIN_EDGE = 16;
+const CUSTOM_SIZE_MAX_EDGE = 3840;
+const CUSTOM_SIZE_STEP = 16;
+const CUSTOM_SIZE_MIN_PIXELS = 655_360;
+const CUSTOM_SIZE_MAX_PIXELS = 8_294_400;
+const CUSTOM_SIZE_MAX_RATIO = 3;
 
 function roundToMultipleOf16(value: number) {
-  return Math.max(16, Math.round(value / 16) * 16);
+  return Math.max(CUSTOM_SIZE_MIN_EDGE, Math.round(value / CUSTOM_SIZE_STEP) * CUSTOM_SIZE_STEP);
 }
 
-function fitRatioToLongEdge(
+function floorToMultipleOf16(value: number) {
+  return Math.max(CUSTOM_SIZE_MIN_EDGE, Math.floor(value / CUSTOM_SIZE_STEP) * CUSTOM_SIZE_STEP);
+}
+
+function isValidCustomResolution(width: number, height: number) {
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width < CUSTOM_SIZE_MIN_EDGE ||
+    width > CUSTOM_SIZE_MAX_EDGE ||
+    height < CUSTOM_SIZE_MIN_EDGE ||
+    height > CUSTOM_SIZE_MAX_EDGE ||
+    width % CUSTOM_SIZE_STEP !== 0 ||
+    height % CUSTOM_SIZE_STEP !== 0
+  ) {
+    return false;
+  }
+
+  const totalPixels = width * height;
+  if (
+    totalPixels < CUSTOM_SIZE_MIN_PIXELS ||
+    totalPixels > CUSTOM_SIZE_MAX_PIXELS
+  ) {
+    return false;
+  }
+
+  const longSide = Math.max(width, height);
+  const shortSide = Math.min(width, height);
+  return longSide / shortSide <= CUSTOM_SIZE_MAX_RATIO;
+}
+
+function fitRatioToTargetPixels(
   ratioWidth: number,
   ratioHeight: number,
-  longEdge: number,
+  targetPixels: number,
 ) {
-  if (ratioWidth >= ratioHeight) {
-    const width = roundToMultipleOf16(longEdge);
-    const height = roundToMultipleOf16((width * ratioHeight) / ratioWidth);
-    return { width, height };
+  if (
+    !Number.isFinite(ratioWidth) ||
+    !Number.isFinite(ratioHeight) ||
+    !Number.isFinite(targetPixels) ||
+    ratioWidth <= 0 ||
+    ratioHeight <= 0 ||
+    targetPixels <= 0
+  ) {
+    return null;
   }
-  const height = roundToMultipleOf16(longEdge);
-  const width = roundToMultipleOf16((height * ratioWidth) / ratioHeight);
-  return { width, height };
+
+  const isLandscape = ratioWidth >= ratioHeight;
+  const ratio = ratioWidth / ratioHeight;
+  const theoreticalLongEdge = isLandscape
+    ? Math.sqrt(targetPixels * ratio)
+    : Math.sqrt(targetPixels / ratio);
+  let longEdge = floorToMultipleOf16(
+    Math.min(CUSTOM_SIZE_MAX_EDGE, theoreticalLongEdge),
+  );
+
+  while (longEdge >= CUSTOM_SIZE_MIN_EDGE) {
+    const width = isLandscape
+      ? longEdge
+      : floorToMultipleOf16((longEdge * ratioWidth) / ratioHeight);
+    const height = isLandscape
+      ? floorToMultipleOf16((longEdge * ratioHeight) / ratioWidth)
+      : longEdge;
+
+    if (isValidCustomResolution(width, height)) {
+      return { width, height };
+    }
+
+    longEdge -= CUSTOM_SIZE_STEP;
+  }
+
+  return null;
 }
+
+function buildRatioResolutionPresets(
+  ratioWidth: number,
+  ratioHeight: number,
+): ImageResolutionPreset[] {
+  return RESOLUTION_TARGETS
+    .map(({ tier, targetPixels }) => {
+      const dimensions = fitRatioToTargetPixels(
+        ratioWidth,
+        ratioHeight,
+        targetPixels,
+      );
+      if (!dimensions) {
+        return null;
+      }
+      const { width, height } = dimensions;
+      return {
+        tier,
+        label: `${width} x ${height}`,
+        value: `${width}x${height}`,
+        access: "free" as const,
+      };
+    })
+    .filter((item): item is ImageResolutionPreset => Boolean(item))
+    .filter(
+      (preset, index, list) =>
+        list.findIndex((candidate) => candidate.value === preset.value) === index,
+    );
+}
+
+const imageResolutionPresets: Record<StandardAspectRatio, ImageResolutionPreset[]> =
+  Object.fromEntries(
+    STANDARD_RATIO_OPTIONS.map((option) => [
+      option.value,
+      buildRatioResolutionPresets(option.widthRatio, option.heightRatio),
+    ]),
+  ) as Record<StandardAspectRatio, ImageResolutionPreset[]>;
 
 function buildCustomResolutionPresets(aspectRatioLabel: string): ImageResolutionPreset[] {
   const ratio = parseAspectRatioPair(
@@ -183,24 +334,23 @@ function buildCustomResolutionPresets(aspectRatioLabel: string): ImageResolution
     return imageResolutionPresets["1:1"];
   }
   const [ratioWidth, ratioHeight] = ratio;
-  const longEdges: Array<{ tier: ImageResolutionTier; longEdge: number }> = [
-    { tier: "custom-1k", longEdge: 1024 },
-    { tier: "custom-2k", longEdge: 2048 },
-    { tier: "custom-4k", longEdge: 3840 },
-  ];
-  const presets = longEdges.map(({ tier, longEdge }) => {
-    const { width, height } = fitRatioToLongEdge(ratioWidth, ratioHeight, longEdge);
-    return {
-      tier,
-      label: `${width} x ${height}`,
-      value: `${width}x${height}`,
-      access: "free" as const,
-    };
-  });
-  return presets.filter(
+  const presets = buildRatioResolutionPresets(ratioWidth, ratioHeight);
+  const filteredPresets = presets.filter(
     (preset, index, list) =>
-      list.findIndex((candidate) => candidate.value === preset.value) === index,
+      list.findIndex((candidate) => candidate.value === preset.value) === index &&
+      (() => {
+        const [width, height] = preset.value
+          .split("x")
+          .map((item) => Number(item));
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+          return false;
+        }
+        return isValidCustomResolution(width, height);
+      })(),
   );
+  return filteredPresets.length > 0
+    ? filteredPresets
+    : imageResolutionPresets["1:1"];
 }
 
 const modeOptions: Array<{
@@ -752,6 +902,8 @@ export default function ImagePage() {
   const [desktopPromptHeight, setDesktopPromptHeight] = useState(
     DESKTOP_PROMPT_MIN_HEIGHT,
   );
+  const [isCustomAspectRatioComposing, setIsCustomAspectRatioComposing] =
+    useState(false);
   const promptResizeStateRef = useRef<{
     startY: number;
     startHeight: number;
@@ -1129,6 +1281,30 @@ export default function ImagePage() {
       "",
     [imageResolutionTier, imageResolutionTierOptions],
   );
+  const resolutionTierBySizeValue = useMemo(() => {
+    const next = new Map<string, string>();
+    const register = (presets: ImageResolutionPreset[]) => {
+      presets.forEach((preset) => {
+        const key = String(preset.value || "")
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "");
+        if (!key || next.has(key)) {
+          return;
+        }
+        next.set(key, preset.tier);
+      });
+    };
+
+    register(imageAutoResolutionPresets);
+    (Object.keys(imageResolutionPresets) as Array<
+      Exclude<ImageAspectRatio, "auto" | "custom">
+    >).forEach((aspectRatio) => {
+      register(imageResolutionPresets[aspectRatio]);
+    });
+
+    return next;
+  }, []);
   const imageSize = useMemo(
     () =>
       imageAspectRatio === "auto"
@@ -1159,6 +1335,17 @@ export default function ImagePage() {
     [customAspectRatioLabel],
   );
   const handleCustomAspectRatioLabelChange = useCallback((value: string) => {
+    if (isCustomAspectRatioComposing) {
+      setCustomAspectRatioLabel(value);
+      return;
+    }
+    setCustomAspectRatioLabel(normalizeCustomAspectRatioInput(value));
+  }, [isCustomAspectRatioComposing]);
+  const handleCustomAspectRatioCompositionStart = useCallback(() => {
+    setIsCustomAspectRatioComposing(true);
+  }, []);
+  const handleCustomAspectRatioCompositionEnd = useCallback((value: string) => {
+    setIsCustomAspectRatioComposing(false);
     setCustomAspectRatioLabel(normalizeCustomAspectRatioInput(value));
   }, []);
   const handleImageResolutionTierChange = useCallback((value: string) => {
@@ -1858,6 +2045,88 @@ export default function ImagePage() {
     [openDraftConversation, setSourceImages],
   );
 
+  const handleReuseTurnConfig = useCallback(
+    (conversationId: string, turn: ImageConversationTurn) => {
+      focusConversation(conversationId);
+      setMode(turn.mode === "edit" ? "edit" : "generate");
+      setImagePrompt(String(turn.prompt || ""));
+      setImageCount(String(Math.max(1, turn.count || 1)));
+      setSelectedImageModel(turn.model || getStoredImageModel());
+
+      const nextAspectRatio = resolveAspectRatioFromSize(turn.size);
+      const normalizedTurnSize = String(turn.size || "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+      setImageAspectRatio(nextAspectRatio);
+      if (nextAspectRatio === "custom" && turn.size) {
+        const ratioCandidate = String(turn.size)
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "")
+          .replace(/x/g, ":");
+        setCustomAspectRatioLabel(normalizeCustomAspectRatioInput(ratioCandidate));
+      }
+
+      if (turn.size) {
+        let matchedTier = resolutionTierBySizeValue.get(normalizedTurnSize);
+        if (!matchedTier && nextAspectRatio === "custom") {
+          const ratioCandidate = String(turn.size)
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, "")
+            .replace(/x/g, ":");
+          const customPreset = buildCustomResolutionPresets(ratioCandidate).find(
+            (item) =>
+              String(item.value || "")
+                .replace(/\s+/g, "")
+                .toLowerCase() === normalizedTurnSize,
+          );
+          matchedTier = customPreset?.tier;
+        }
+        if (matchedTier) {
+          setImageResolutionTier(matchedTier);
+        } else {
+          setImageResolutionTier("standard");
+        }
+      }
+
+      const nextQuality = turn.quality;
+      if (
+        nextQuality === "low" ||
+        nextQuality === "medium" ||
+        nextQuality === "high" ||
+        nextQuality === "auto"
+      ) {
+        setImageQuality(nextQuality);
+      }
+
+      const nextFormat = turn.outputFormat;
+      if (nextFormat === "jpeg" || nextFormat === "png" || nextFormat === "webp") {
+        setImageOutputFormat(nextFormat);
+      }
+
+      const turnSources = Array.isArray(turn.sourceImages)
+        ? mapStoredTurnSourceImages(turn.sourceImages)
+        : [];
+      setSourceImages(turnSources);
+
+      if (!pathname.endsWith("/workspace")) {
+        navigate("/image/workspace");
+      }
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+      toast.success("已复用该任务配置");
+    },
+    [
+      focusConversation,
+      navigate,
+      pathname,
+      resolutionTierBySizeValue,
+      setSourceImages,
+    ],
+  );
+
   const syncDirectActiveRequests = useCallback(() => {
     setDirectActiveRequests(
       Object.values(directActiveRequestsRef.current).sort(
@@ -2072,6 +2341,7 @@ export default function ImagePage() {
             <ConversationTurns
               conversationId={selectedConversation.id}
               turns={selectedConversationTurns}
+              scrollRoot={resultsViewportRef.current}
               modeLabelMap={modeLabelMap}
               activeRequests={effectiveActiveRequests}
               activeRequestElapsedSecondsByTurnId={activeRequestElapsedSecondsByTurnId}
@@ -2084,6 +2354,7 @@ export default function ImagePage() {
               onOpenSelectionEditor={openSelectionEditor}
               onSeedFromResult={seedFromResult}
               onRetryTurn={handleRetryTurn}
+              onReuseTurnConfig={handleReuseTurnConfig}
               onCancelTurn={handleCancelTurn}
             />
           )}
@@ -2143,6 +2414,8 @@ export default function ImagePage() {
         onImageCountChange={setImageCount}
         onImageAspectRatioChange={handleImageAspectRatioChange}
         onCustomAspectRatioValueChange={handleCustomAspectRatioLabelChange}
+        onCustomAspectRatioCompositionStart={handleCustomAspectRatioCompositionStart}
+        onCustomAspectRatioCompositionEnd={handleCustomAspectRatioCompositionEnd}
         onImageResolutionTierChange={handleImageResolutionTierChange}
         onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
         onImageOutputFormatChange={(value) =>
@@ -2200,6 +2473,8 @@ export default function ImagePage() {
         imageQualityDisabledReason={imageQualityDisabledReason}
         onImageAspectRatioChange={handleImageAspectRatioChange}
         onCustomAspectRatioValueChange={handleCustomAspectRatioLabelChange}
+        onCustomAspectRatioCompositionStart={handleCustomAspectRatioCompositionStart}
+        onCustomAspectRatioCompositionEnd={handleCustomAspectRatioCompositionEnd}
         onImageResolutionTierChange={handleImageResolutionTierChange}
         onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
         onClose={closeSelectionEditor}

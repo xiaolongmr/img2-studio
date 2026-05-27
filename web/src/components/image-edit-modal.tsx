@@ -53,6 +53,8 @@ type ImageEditModalProps = {
   imageQualityDisabledReason?: string;
   onImageAspectRatioChange?: (value: string) => void;
   onCustomAspectRatioValueChange?: (value: string) => void;
+  onCustomAspectRatioCompositionStart?: () => void;
+  onCustomAspectRatioCompositionEnd?: (value: string) => void;
   onImageResolutionTierChange?: (value: string) => void;
   onImageQualityChange?: (value: string) => void;
   onClose: () => void;
@@ -135,6 +137,8 @@ export function ImageEditModal({
   imageQualityDisabledReason = "",
   onImageAspectRatioChange,
   onCustomAspectRatioValueChange,
+  onCustomAspectRatioCompositionStart,
+  onCustomAspectRatioCompositionEnd,
   onImageResolutionTierChange,
   onImageQualityChange,
   onClose,
@@ -716,6 +720,10 @@ export function ImageEditModal({
                       value={customAspectRatioValue}
                       onChange={(event) =>
                         onCustomAspectRatioValueChange?.(event.target.value)
+                      }
+                      onCompositionStart={() => onCustomAspectRatioCompositionStart?.()}
+                      onCompositionEnd={(event) =>
+                        onCustomAspectRatioCompositionEnd?.(event.currentTarget.value)
                       }
                       placeholder="如 5:4"
                       className="h-9 w-[96px] shrink-0 rounded-full border-stone-200 bg-white text-[13px] font-medium text-stone-700 shadow-none focus-visible:ring-0 sm:w-[124px] sm:text-sm"

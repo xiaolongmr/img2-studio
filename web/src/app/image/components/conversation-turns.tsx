@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Zoom from "react-medium-image-zoom";
 import {
   Brush,
@@ -10,6 +10,7 @@ import {
   Link2,
   LoaderCircle,
   RotateCcw,
+  Settings2,
   Sparkles,
   X,
 } from "lucide-react";
@@ -137,6 +138,7 @@ async function copyPromptToClipboard(prompt: string) {
 type ConversationTurnsProps = {
   conversationId: string;
   turns: ImageConversationTurn[];
+  scrollRoot?: HTMLDivElement | null;
   modeLabelMap: Record<ImageMode, string>;
   activeRequests: ActiveRequestState[];
   activeRequestElapsedSecondsByTurnId: Record<string, number>;
@@ -162,6 +164,7 @@ type ConversationTurnsProps = {
     turn: ImageConversationTurn,
     imageIndex?: number,
   ) => Promise<void>;
+  onReuseTurnConfig: (conversationId: string, turn: ImageConversationTurn) => void;
   onCancelTurn: (
     conversationId: string,
     turn: ImageConversationTurn,
@@ -174,6 +177,7 @@ const VISIBLE_TURN_STEP = 4;
 export const ConversationTurns = memo(function ConversationTurns({
   conversationId,
   turns,
+  scrollRoot = null,
   modeLabelMap,
   activeRequests,
   activeRequestElapsedSecondsByTurnId,
@@ -186,15 +190,22 @@ export const ConversationTurns = memo(function ConversationTurns({
   onOpenSelectionEditor,
   onSeedFromResult,
   onRetryTurn,
+  onReuseTurnConfig,
   onCancelTurn,
 }: ConversationTurnsProps) {
   const [visibleTurnCount, setVisibleTurnCount] = useState(() =>
     Math.min(turns.length, INITIAL_VISIBLE_TURNS),
   );
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const autoLoadingRef = useRef(false);
 
   useEffect(() => {
     setVisibleTurnCount(Math.min(turns.length, INITIAL_VISIBLE_TURNS));
   }, [conversationId, turns.length]);
+
+  useEffect(() => {
+    autoLoadingRef.current = false;
+  }, [conversationId]);
 
   const hiddenTurnCount = Math.max(0, turns.length - visibleTurnCount);
   const visibleTurns = useMemo(
@@ -202,21 +213,60 @@ export const ConversationTurns = memo(function ConversationTurns({
     [hiddenTurnCount, turns],
   );
 
+  useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel || hiddenTurnCount <= 0) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
+      setVisibleTurnCount((current) =>
+        Math.min(turns.length, current + VISIBLE_TURN_STEP),
+      );
+      return;
+    }
+
+    const resolvedRoot =
+      scrollRoot ??
+      (sentinel.closest(".overflow-y-auto") as HTMLDivElement | null);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting || autoLoadingRef.current) {
+          return;
+        }
+        autoLoadingRef.current = true;
+        setVisibleTurnCount((current) =>
+          Math.min(turns.length, current + VISIBLE_TURN_STEP),
+        );
+        window.setTimeout(() => {
+          autoLoadingRef.current = false;
+        }, 120);
+      },
+      {
+        root: resolvedRoot,
+        threshold: 0,
+        rootMargin: "120px 0px 0px 0px",
+      },
+    );
+
+    observer.observe(sentinel);
+    return () => {
+      observer.disconnect();
+    };
+  }, [hiddenTurnCount, scrollRoot, turns.length]);
+
   return (
     <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-0 pb-8 sm:px-6 sm:py-8">
       {hiddenTurnCount > 0 ? (
         <div className="flex justify-center">
-          <button
-            type="button"
-            onClick={() =>
-              setVisibleTurnCount((current) =>
-                Math.min(turns.length, current + VISIBLE_TURN_STEP),
-              )
-            }
-            className="rounded-full border border-stone-200 bg-white px-4 py-2 text-xs font-medium text-stone-600 transition hover:bg-stone-50 hover:text-stone-900"
-          >
-            加载更早记录（剩余 {hiddenTurnCount} 条）
-          </button>
+          <div
+            ref={loadMoreSentinelRef}
+            className="h-2 w-full"
+            aria-hidden="true"
+          />
+          <span className="sr-only">向上滚动自动加载更早记录</span>
         </div>
       ) : null}
       {visibleTurns.map((turn) => {
@@ -310,18 +360,32 @@ export const ConversationTurns = memo(function ConversationTurns({
                   <div className="min-w-0 whitespace-pre-wrap break-words rounded-[28px] bg-[#f2f2f1] px-5 py-4 text-[15px] leading-7 text-stone-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)]">
                     {turn.prompt || "无额外提示词"}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void copyPromptToClipboard(turn.prompt || "")
-                    }
-                    className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-stone-200 bg-white px-2.5 text-xs font-medium text-stone-500 opacity-0 shadow-sm transition hover:bg-stone-100 hover:text-stone-900 focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
-                    title="复制提示词"
-                    aria-label="复制提示词"
-                  >
-                    <Copy className="size-3.5" />
-                    复制
-                  </button>
+                  <div className="flex items-center gap-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onReuseTurnConfig(conversationId, turn)
+                      }
+                      className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-stone-200 bg-white px-2.5 text-xs font-medium text-stone-500 shadow-sm transition hover:bg-stone-100 hover:text-stone-900 focus-visible:outline-none"
+                      title="复用配置"
+                      aria-label="复用配置"
+                    >
+                      <Settings2 className="size-3.5" />
+                      复用配置
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void copyPromptToClipboard(turn.prompt || "")
+                      }
+                      className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-stone-200 bg-white px-2.5 text-xs font-medium text-stone-500 shadow-sm transition hover:bg-stone-100 hover:text-stone-900 focus-visible:outline-none"
+                      title="复制提示词"
+                      aria-label="复制提示词"
+                    >
+                      <Copy className="size-3.5" />
+                      复制
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

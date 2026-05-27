@@ -1,4 +1,4 @@
-import type { ImageConversation, StoredImage, StoredSourceImage } from "@/store/image-conversations";
+﻿import type { ImageConversation, StoredImage, StoredSourceImage } from "@/store/image-conversations";
 import webConfig from "@/constants/common-env";
 
 function normalizeImageURL(url?: string) {
@@ -33,7 +33,10 @@ export function buildSourceImageUrl(source: StoredSourceImage) {
 }
 
 export function buildConversationSourceLabel(source: StoredSourceImage) {
-  return source.role === "mask" ? "选区 / 遮罩" : "源图";
+  if (source.role === "mask") {
+    return "閫夊尯 / 閬僵";
+  }
+  return "参考图";
 }
 
 export function buildConversationPreviewSource(conversation: ImageConversation) {
@@ -58,3 +61,4 @@ export function buildConversationPreviewSource(conversation: ImageConversation) 
 
 const imageDataUrlCache = new WeakMap<StoredImage, string>();
 const conversationPreviewSourceCache = new WeakMap<ImageConversation, string>();
+

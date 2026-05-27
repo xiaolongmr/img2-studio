@@ -3,7 +3,7 @@
 export const IMAGE_STREAM_PARTIAL_IMAGES_KEY =
   "studio.image-stream.partial-images.v1";
 
-const DEFAULT_PARTIAL_IMAGES = 1;
+const DEFAULT_PARTIAL_IMAGES = 2;
 
 function normalizePartialImages(value: unknown) {
   const numeric = Number(value);

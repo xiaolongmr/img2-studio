@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   useEffect,
@@ -28,7 +28,11 @@ import { Textarea } from "@/components/ui/textarea";
 import type { ImageOutputFormat, ImageQuality } from "@/lib/api";
 import type { ImageMode, StoredSourceImage } from "@/store/image-conversations";
 import { cn } from "@/lib/utils";
-import { buildSourceImageReferenceLabel, normalizeSourceImageMention } from "../submit-utils";
+import {
+  buildSourceImageReferenceLabel,
+  normalizeSourceImageMention,
+  stripSelectedMentionMarkers,
+} from "../submit-utils";
 import { buildSourceImageUrl } from "../view-utils";
 
 type PromptComposerProps = {
@@ -129,9 +133,173 @@ export function PromptComposer({
   const [mentionPickerIndex, setMentionPickerIndex] = useState(0);
   const [isDraggingReferenceImage, setIsDraggingReferenceImage] = useState(false);
   const dragLayerDepthRef = useRef(0);
+  const mentionHighlightRef = useRef<HTMLDivElement | null>(null);
   const isMobileComposerCollapsed = !isMobileComposerExpanded;
   const showMobileExpandedSections = !isMobileComposerCollapsed;
   const imageReferenceSources = sourceImages.filter((item) => item.role === "image");
+  const [isImeComposing, setIsImeComposing] = useState(false);
+  const mentionTokens = useMemo(() => {
+    const tokens = imageReferenceSources
+      .map((source, sourceIndex) => {
+        const indexInAll = sourceImages.findIndex((item) => item.id === source.id);
+        const fallbackLabel = buildSourceImageReferenceLabel(
+          source,
+          indexInAll >= 0 ? indexInAll : sourceIndex,
+        );
+        const normalizedAlias = normalizeSourceImageMention(source.referenceAlias);
+        return normalizedAlias || fallbackLabel;
+      })
+      .filter((item) => item.length > 1);
+    return Array.from(new Set(tokens)).sort((a, b) => b.length - a.length);
+  }, [imageReferenceSources, sourceImages]);
+
+  function findMentionTriggerIndex(text: string) {
+    return Math.max(text.lastIndexOf("@"), text.lastIndexOf("＠"));
+  }
+
+  function isCjkCharacter(char: string) {
+    return /[\u3400-\u9fff]/.test(char);
+  }
+
+  function shouldInsertLeadingSpace(prefix: string) {
+    if (prefix.length === 0) {
+      return false;
+    }
+    const previousChar = prefix.charAt(prefix.length - 1);
+    if (/\s/.test(previousChar)) {
+      return false;
+    }
+    if (/[，。！？；：、,.!?;:()（）\[\]【】<>《》「」『』"'`]/.test(previousChar)) {
+      return false;
+    }
+    return true;
+  }
+
+  function shouldInsertTrailingSpace(suffix: string) {
+    if (suffix.length === 0) {
+      return false;
+    }
+    const nextChar = suffix.charAt(0);
+    if (/\s/.test(nextChar)) {
+      return false;
+    }
+    
+    if (/[，。！？；：、,.!?;:()（）\[\]【】<>《》「」『』"'`]/.test(nextChar)) {
+      return false;
+    }
+    return true;
+  }
+
+  function hasMentionTokenInPrompt(value: string) {
+    if (mentionTokens.length === 0) {
+      return false;
+    }
+    const content = stripSelectedMentionMarkers(value);
+    return mentionTokens.some((token) => content.includes(token));
+  }
+
+  function stripMentionMarkersWithSelection(
+    value: string,
+    selectionStart: number,
+    selectionEnd: number,
+  ) {
+    const safeValue = String(value || "");
+    const rawStart = Math.max(0, Math.min(selectionStart, safeValue.length));
+    const rawEnd = Math.max(rawStart, Math.min(selectionEnd, safeValue.length));
+    let sanitized = "";
+    let mappedStart = 0;
+    let mappedEnd = 0;
+    for (let index = 0; index < safeValue.length; index += 1) {
+      const char = safeValue.charAt(index);
+      const isMarker = char === "\u2063" || char === "\u2064";
+      if (!isMarker) {
+        sanitized += char;
+      }
+      if (index < rawStart && !isMarker) {
+        mappedStart += 1;
+      }
+      if (index < rawEnd && !isMarker) {
+        mappedEnd += 1;
+      }
+    }
+    return {
+      value: sanitized,
+      start: mappedStart,
+      end: mappedEnd,
+    };
+  }
+
+  function renderPromptWithMentionHighlight(value: string) {
+    const content = stripSelectedMentionMarkers(value);
+    if (mentionTokens.length === 0) {
+      return content;
+    }
+    const escapedMentionTokens = mentionTokens
+      .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const mentionPattern = new RegExp(`(${escapedMentionTokens.join("|")})`, "g");
+    const parts: ReactNode[] = [];
+    let lastIndex = 0;
+    let key = 0;
+
+    for (const match of content.matchAll(mentionPattern)) {
+      const mention = String(match[1] ?? "");
+      const mentionIndex = match.index ?? -1;
+      if (mentionIndex < 0) {
+        continue;
+      }
+      const mentionHead = content.slice(Math.max(0, mentionIndex - 1), mentionIndex);
+      if (mentionHead && /[@＠\w-]/.test(mentionHead)) {
+        continue;
+      }
+      const mentionTail = content.slice(
+        mentionIndex + mention.length,
+        mentionIndex + mention.length + 1,
+      );
+      if (mentionTail && /[\w-]/.test(mentionTail)) {
+        continue;
+      }
+      if (mentionIndex > lastIndex) {
+        parts.push(
+          <span key={`text-${key++}`}>
+            {content.slice(lastIndex, mentionIndex)}
+          </span>,
+        );
+      }
+      parts.push(
+        <span
+          key={`mention-${key++}`}
+          className="relative isolate text-sky-700 before:pointer-events-none before:absolute before:-inset-x-[3px] before:-inset-y-[1px] before:rounded-[6px] before:bg-sky-500/16 before:[box-shadow:inset_0_0_0_1px_rgba(14,165,233,0.36)] dark:text-sky-200 dark:before:bg-sky-500/20 dark:before:[box-shadow:inset_0_0_0_1px_rgba(56,189,248,0.5)]"
+        >
+          {mention}
+        </span>,
+      );
+      lastIndex = mentionIndex + mention.length;
+    }
+
+    if (lastIndex < content.length) {
+      parts.push(
+        <span key={`text-${key++}`}>
+          {content.slice(lastIndex)}
+        </span>,
+      );
+    }
+
+    if (parts.length === 0) {
+      return content;
+    }
+
+    return parts;
+  }
+
+  function syncMentionHighlightScroll() {
+    const textarea = textareaRef.current;
+    const highlight = mentionHighlightRef.current;
+    if (!textarea || !highlight) {
+      return;
+    }
+    highlight.scrollTop = textarea.scrollTop;
+    highlight.scrollLeft = textarea.scrollLeft;
+  }
 
   useEffect(() => {
     if (hasComposerContent && !previousHasComposerContentRef.current) {
@@ -157,7 +325,35 @@ export function PromptComposer({
   }, [isMobileComposerCollapsed, onMobileCollapsedChange]);
 
   useEffect(() => {
-    promptValueRef.current = imagePrompt;
+    const textarea = textareaRef.current;
+    const fallbackStart = promptSelectionRef.current.start ?? imagePrompt.length;
+    const fallbackEnd = promptSelectionRef.current.end ?? fallbackStart;
+    const rawStart = textarea?.selectionStart ?? fallbackStart;
+    const rawEnd = textarea?.selectionEnd ?? fallbackEnd;
+    const normalizedPrompt = stripMentionMarkersWithSelection(
+      imagePrompt,
+      rawStart,
+      rawEnd,
+    );
+    promptValueRef.current = normalizedPrompt.value;
+    promptSelectionRef.current = {
+      start: normalizedPrompt.start,
+      end: normalizedPrompt.end,
+    };
+    if (normalizedPrompt.value !== imagePrompt) {
+      onPromptChange(normalizedPrompt.value);
+    }
+    if (
+      textarea &&
+      typeof document !== "undefined" &&
+      document.activeElement === textarea &&
+      (normalizedPrompt.start !== rawStart || normalizedPrompt.end !== rawEnd)
+    ) {
+      window.requestAnimationFrame(() => {
+        textarea.setSelectionRange(normalizedPrompt.start, normalizedPrompt.end);
+        syncPromptSelection();
+      });
+    }
   }, [imagePrompt]);
 
   const sizeHintTooltip =
@@ -190,20 +386,24 @@ export function PromptComposer({
       buildSourceImageReferenceLabel(source, index);
     const currentValue = textarea?.value ?? promptValueRef.current;
     const selectionStart =
-      fallbackSelection.start ?? textarea?.selectionStart ?? currentValue.length;
+      textarea?.selectionStart ?? fallbackSelection.start ?? currentValue.length;
     const selectionEnd =
-      fallbackSelection.end ?? textarea?.selectionEnd ?? selectionStart;
+      textarea?.selectionEnd ?? fallbackSelection.end ?? selectionStart;
     const beforeSelection = currentValue.slice(0, selectionStart);
     const afterSelection = currentValue.slice(selectionEnd);
-    const mentionTriggerIndex = beforeSelection.lastIndexOf("@");
+    const mentionTriggerIndex = findMentionTriggerIndex(beforeSelection);
     const replaceStart = replaceMentionTrigger
       ? mentionTriggerIndex >= 0
         ? mentionTriggerIndex
         : selectionStart
       : selectionStart;
     const prefix = currentValue.slice(0, replaceStart);
-    const needsLeadingSpace = prefix.length > 0 && !/\s$/.test(prefix);
-    const needsTrailingSpace = afterSelection.length > 0 && !/^\s/.test(afterSelection);
+    const needsLeadingSpace = replaceMentionTrigger
+      ? prefix.length > 0 && !/\s$/.test(prefix)
+      : shouldInsertLeadingSpace(prefix);
+    const needsTrailingSpace = replaceMentionTrigger
+      ? afterSelection.length === 0 || !/^\s/.test(afterSelection)
+      : afterSelection.length === 0 || shouldInsertTrailingSpace(afterSelection);
     const insertedMention = `${needsLeadingSpace ? " " : ""}${mention}${needsTrailingSpace ? " " : ""}`;
     const nextValue = `${prefix}${insertedMention}${afterSelection}`;
     const nextCursor = `${prefix}${insertedMention}`.length;
@@ -221,6 +421,7 @@ export function PromptComposer({
     window.requestAnimationFrame(() => {
       textarea?.focus();
       textarea?.setSelectionRange(nextCursor, nextCursor);
+      syncPromptSelection();
     });
   }
 
@@ -260,19 +461,69 @@ export function PromptComposer({
     }
   }
 
+  function shouldOpenMentionPicker(value: string, cursor: number) {
+    if (isImeComposing) {
+      return false;
+    }
+    if (imageReferenceSources.length === 0) {
+      return false;
+    }
+    const beforeCursor = stripSelectedMentionMarkers(value.slice(0, cursor));
+    const mentionTriggerIndex = findMentionTriggerIndex(beforeCursor);
+    if (mentionTriggerIndex < 0) {
+      return false;
+    }
+    const mentionKeyword = stripSelectedMentionMarkers(
+      beforeCursor.slice(mentionTriggerIndex + 1),
+    );
+    if (!/^[\u3400-\u9fff\w-]*$/.test(mentionKeyword)) {
+      return false;
+    }
+    const previousChar =
+      mentionTriggerIndex > 0
+        ? beforeCursor.charAt(mentionTriggerIndex - 1)
+        : "";
+    if (!previousChar || /\s/.test(previousChar)) {
+      return true;
+    }
+    if (isCjkCharacter(previousChar)) {
+      return true;
+    }
+
+    // Avoid opening mention picker for email-like inputs: name@example.com
+    if (/[A-Za-z0-9._%+-]/.test(previousChar)) {
+      const beforeAt = beforeCursor.slice(0, mentionTriggerIndex);
+      const localPartMatch = beforeAt.match(/[A-Za-z0-9._%+-]+$/);
+      const domainFragment = beforeCursor.slice(mentionTriggerIndex + 1);
+      const looksLikeDomainFragment = /^[A-Za-z0-9.-]*$/.test(domainFragment);
+      if (localPartMatch && looksLikeDomainFragment) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   function handlePromptValueChange(value: string) {
-    promptValueRef.current = value;
-    onPromptChange(value);
     const textarea = textareaRef.current;
-    const cursor = textarea?.selectionStart ?? value.length;
-    const selectionEnd = textarea?.selectionEnd ?? cursor;
+    const rawStart = textarea?.selectionStart ?? value.length;
+    const rawEnd = textarea?.selectionEnd ?? rawStart;
+    const sanitized = stripMentionMarkersWithSelection(value, rawStart, rawEnd);
+    promptValueRef.current = sanitized.value;
+    onPromptChange(sanitized.value);
     promptSelectionRef.current = {
-      start: cursor,
-      end: selectionEnd,
+      start: sanitized.start,
+      end: sanitized.end,
     };
-    const beforeCursor = value.slice(0, cursor);
-    const mentionMatch = beforeCursor.match(/(^|\s)@[\u4e00-\u9fa5\w-]*$/);
-    setMentionPickerOpen(Boolean(mentionMatch && imageReferenceSources.length > 0));
+    if (
+      textarea &&
+      (sanitized.start !== rawStart || sanitized.end !== rawEnd)
+    ) {
+      window.requestAnimationFrame(() => {
+        textarea.setSelectionRange(sanitized.start, sanitized.end);
+        syncPromptSelection();
+      });
+    }
+    setMentionPickerOpen(shouldOpenMentionPicker(sanitized.value, sanitized.start));
     setMentionPickerIndex(0);
   }
 
@@ -508,7 +759,7 @@ export function PromptComposer({
                   {imageOutputFormatOptions.map((item) => (
                     <SelectItem key={item.value} value={item.value}>
                       <span title={item.description}>
-                        {item.label} · {item.description}
+                        {item.label} 路 {item.description}
                       </span>
                     </SelectItem>
                   ))}
@@ -665,14 +916,85 @@ export function PromptComposer({
                         : "描述你想如何修改当前图片")}
                   </span>
                 </button>
+                <div className="relative hidden sm:block">
+                  {imagePrompt.length > 0 &&
+                  hasMentionTokenInPrompt(imagePrompt) ? (
+                    <div
+                      ref={mentionHighlightRef}
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 z-0 overflow-hidden whitespace-pre-wrap break-words border-0 !px-1 !pb-1 !pt-1 text-[15px] leading-7 text-stone-900 dark:text-[var(--studio-text)]"
+                      style={desktopPromptStyle}
+                    >
+                      {renderPromptWithMentionHighlight(imagePrompt)}
+                    </div>
+                  ) : null}
+                  <Textarea
+                    ref={textareaRef}
+                    value={imagePrompt}
+                    onChange={(event) => {
+                      handlePromptValueChange(event.target.value);
+                      window.requestAnimationFrame(syncMentionHighlightScroll);
+                    }}
+                    onSelect={syncPromptSelection}
+                    onClick={syncPromptSelection}
+                    onMouseUp={syncPromptSelection}
+                    onKeyUp={syncPromptSelection}
+                    onScroll={syncMentionHighlightScroll}
+                    placeholder={
+                      mode === "generate"
+                        ? "描述你想生成的画面，也可以先上传参考图"
+                        : mode === "edit"
+                          ? "描述你想如何修改当前图片"
+                          : "可选：描述你想增强的方向"
+                    }
+                    onPaste={onPromptPaste}
+                    onKeyDown={handlePromptKeyDown}
+                    spellCheck={false}
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    autoComplete="off"
+                    onCompositionStart={() => setIsImeComposing(true)}
+                    onCompositionEnd={(event) => {
+                      setIsImeComposing(false);
+                      handlePromptValueChange(event.currentTarget.value);
+                    }}
+                    style={desktopPromptStyle}
+                    className={cn(
+                      "relative z-10 resize-none border-0 bg-transparent !px-1 !pb-1 shadow-none focus-visible:ring-0 sm:min-h-[38px] sm:max-h-[260px] sm:overflow-y-auto sm:!pt-1 sm:pr-10 sm:text-[15px] sm:leading-7",
+                      imagePrompt.length > 0 && hasMentionTokenInPrompt(imagePrompt)
+                        ? "text-transparent caret-stone-900"
+                        : "text-stone-900 placeholder:text-stone-400",
+                    )}
+                    onFocus={() => setIsMobileComposerExpanded(true)}
+                    onBlur={syncPromptSelection}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="relative">
+                {imagePrompt.length > 0 &&
+                hasMentionTokenInPrompt(imagePrompt) ? (
+                  <div
+                    ref={mentionHighlightRef}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 z-0 overflow-hidden whitespace-pre-wrap break-words border-0 !px-1 !pb-1 !pt-1 text-[14px] leading-6 text-stone-900 dark:text-[var(--studio-text)] sm:text-[15px] sm:leading-7"
+                    style={desktopPromptStyle}
+                  >
+                    {renderPromptWithMentionHighlight(imagePrompt)}
+                  </div>
+                ) : null}
                 <Textarea
                   ref={textareaRef}
                   value={imagePrompt}
-                  onChange={(event) => handlePromptValueChange(event.target.value)}
+                  onChange={(event) => {
+                    handlePromptValueChange(event.target.value);
+                    window.requestAnimationFrame(syncMentionHighlightScroll);
+                  }}
                   onSelect={syncPromptSelection}
                   onClick={syncPromptSelection}
                   onMouseUp={syncPromptSelection}
                   onKeyUp={syncPromptSelection}
+                  onScroll={syncMentionHighlightScroll}
                   placeholder={
                     mode === "generate"
                       ? "描述你想生成的画面，也可以先上传参考图"
@@ -682,38 +1004,34 @@ export function PromptComposer({
                   }
                   onPaste={onPromptPaste}
                   onKeyDown={handlePromptKeyDown}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  autoComplete="off"
+                  onCompositionStart={() => setIsImeComposing(true)}
+                  onCompositionEnd={(event) => {
+                    setIsImeComposing(false);
+                    handlePromptValueChange(event.currentTarget.value);
+                  }}
                   style={desktopPromptStyle}
-                  className="hidden resize-none border-0 bg-transparent !px-1 !pb-1 text-[14px] text-stone-900 shadow-none placeholder:text-stone-400 focus-visible:ring-0 sm:block sm:min-h-[38px] sm:max-h-[260px] sm:overflow-y-auto sm:!pt-1 sm:pr-10 sm:text-[15px] sm:leading-7"
+                  className={cn(
+                    "relative z-10 resize-none border-0 bg-transparent !px-1 !pb-1 shadow-none focus-visible:ring-0 min-h-[30px] max-h-[70px] overflow-y-auto !pt-1 pr-10 leading-6 sm:min-h-[38px] sm:max-h-[260px] sm:text-[15px] sm:leading-7",
+                    imagePrompt.length > 0 && hasMentionTokenInPrompt(imagePrompt)
+                      ? "text-transparent caret-stone-900"
+                      : "text-stone-900 placeholder:text-stone-400",
+                  )}
                   onFocus={() => setIsMobileComposerExpanded(true)}
                   onBlur={syncPromptSelection}
                 />
-              </>
-            ) : (
-              <Textarea
-                ref={textareaRef}
-                value={imagePrompt}
-                onChange={(event) => handlePromptValueChange(event.target.value)}
-                onSelect={syncPromptSelection}
-                onClick={syncPromptSelection}
-                onMouseUp={syncPromptSelection}
-                onKeyUp={syncPromptSelection}
-                placeholder={
-                  mode === "generate"
-                    ? "描述你想生成的画面，也可以先上传参考图"
-                    : mode === "edit"
-                      ? "描述你想如何修改当前图片"
-                      : "可选：描述你想增强的方向"
-                }
-                onPaste={onPromptPaste}
-                onKeyDown={handlePromptKeyDown}
-                style={desktopPromptStyle}
-                className="resize-none border-0 bg-transparent !px-1 !pb-1 text-[14px] text-stone-900 shadow-none placeholder:text-stone-400 focus-visible:ring-0 min-h-[30px] max-h-[70px] overflow-y-auto !pt-1 pr-10 leading-6 sm:min-h-[38px] sm:max-h-[260px] sm:text-[15px] sm:leading-7"
-                onFocus={() => setIsMobileComposerExpanded(true)}
-                onBlur={syncPromptSelection}
-              />
+              </div>
             )}
             {mentionPickerOpen && imageReferenceSources.length > 0 ? (
-              <div className="absolute left-4 top-full z-[120] mt-2 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_18px_60px_-24px_rgba(15,23,42,0.45)] dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)]">
+              <div
+                className="absolute left-4 bottom-full z-[160] mb-2 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_18px_60px_-24px_rgba(15,23,42,0.45)] dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)]"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+              >
                 <div className="flex items-center gap-2 border-b border-stone-100 px-3 py-2 text-xs font-semibold text-stone-500">
                   <Tags className="size-3.5" />
                   选择要引用的图片
@@ -734,6 +1052,9 @@ export function PromptComposer({
                             : "hover:bg-stone-50",
                         )}
                         onMouseEnter={() => setMentionPickerIndex(pickerIndex)}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                        }}
                         onClick={(event) => {
                           event.stopPropagation();
                           insertImageMention(
@@ -812,3 +1133,5 @@ export function PromptComposer({
     </div>
   );
 }
+
+
